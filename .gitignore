@@ -1,0 +1,25 @@
+# Dependencies and generated output
+**/node_modules/
+**/dist/
+**/coverage/
+**/.vite/
+**/.next/
+
+# Environment files and local secrets
+**/.env
+**/.env.*
+!**/.env.example
+
+# Logs and caches
+*.log
+**/.eslintcache
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local Codex workspace state
+.agents/
+.codex/

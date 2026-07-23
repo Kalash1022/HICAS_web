@@ -1,0 +1,558 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  CUSTOMER
+  STAFF
+  ADMIN
+
+  @@map("user_role")
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+  PENDING
+
+  @@map("user_status")
+}
+
+enum AuthProvider {
+  GOOGLE
+
+  @@map("auth_provider")
+}
+
+enum MfaTotpStatus {
+  PENDING
+  ENABLED
+
+  @@map("mfa_totp_status")
+}
+
+enum PrimaryAuthMethod {
+  PASSWORD
+  GOOGLE
+
+  @@map("primary_auth_method")
+}
+
+enum VerificationTokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+
+  @@map("verification_token_type")
+}
+
+enum SecurityEventType {
+  LOGIN_FAILED
+  PASSWORD_RESET
+  MFA_CHANGED
+  MFA_RECOVERY_CODE_USED
+  MFA_RESET_BY_ADMIN
+
+  @@map("security_event_type")
+}
+
+enum AuditAction {
+  PRODUCT_CREATED
+  PRODUCT_UPDATED
+  INVENTORY_ADJUSTED
+  ORDER_STATUS_CHANGED
+  USER_BLOCKED
+  USER_UNBLOCKED
+  USER_ROLE_CHANGED
+  USER_MFA_RESET
+
+  @@map("audit_action")
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+
+  @@map("product_status")
+}
+
+enum InventoryTransactionType {
+  IMPORT
+  ADJUST
+  RESERVE
+  RELEASE
+  COMMIT
+  RESTOCK
+
+  @@map("inventory_transaction_type")
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPING
+  COMPLETED
+  CANCELLED
+
+  @@map("order_status")
+}
+
+enum PaymentMethod {
+  COD
+
+  @@map("payment_method")
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+
+  @@map("payment_status")
+}
+
+enum CurrencyCode {
+  VND
+
+  @@map("currency_code")
+}
+
+model User {
+  id              String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email           String
+  emailNormalized String     @unique(map: "users_email_normalized_key") @map("email_normalized")
+  fullName        String     @map("full_name")
+  phone           String?
+  avatarUrl       String?    @map("avatar_url")
+  birthDate       DateTime?  @map("birth_date") @db.Date
+  role            UserRole   @default(CUSTOMER)
+  status          UserStatus @default(PENDING)
+  emailVerifiedAt DateTime?  @map("email_verified_at") @db.Timestamptz(3)
+  lastLoginAt     DateTime?  @map("last_login_at") @db.Timestamptz(3)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  passwordCredential        PasswordCredential?
+  authIdentities            AuthIdentity[]
+  sessions                  Session[]
+  mfaTotpMethod             MfaTotpMethod?
+  mfaChallenges             MfaChallenge[]
+  mfaEnrollmentGrants       MfaEnrollmentGrant[]
+  mfaRecoveryCodes          MfaRecoveryCode[]
+  verificationTokens        VerificationToken[]
+  securityEvents            SecurityEvent[]
+  actorAuditLogs            AuditLog[]             @relation("AuditLogActor")
+  addresses                 Address[]
+  createdProducts           Product[]              @relation("ProductCreatedBy")
+  createdInventoryTxs       InventoryTransaction[] @relation("InventoryTransactionCreatedBy")
+  cart                      Cart?
+  orders                    Order[]
+  changedOrderStatusHistory OrderStatusHistory[]   @relation("OrderStatusChangedBy")
+
+  @@index([role, status, id], map: "users_role_status_id_idx")
+  @@index([createdAt(sort: Desc), id(sort: Desc)], map: "users_created_at_id_idx")
+  @@map("users")
+}
+
+model PasswordCredential {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String   @unique(map: "password_credentials_user_id_key") @map("user_id") @db.Uuid
+  passwordHash      String   @map("password_hash")
+  passwordChangedAt DateTime @default(now()) @map("password_changed_at") @db.Timestamptz(3)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_credentials")
+}
+
+model AuthIdentity {
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String       @map("user_id") @db.Uuid
+  provider          AuthProvider
+  providerAccountId String       @map("provider_account_id")
+  providerEmail     String       @map("provider_email")
+  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId], map: "auth_identities_provider_account_key")
+  @@index([userId], map: "auth_identities_user_id_idx")
+  @@map("auth_identities")
+}
+
+model OauthTransaction {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  stateHash             String    @unique(map: "oauth_transactions_state_hash_key") @map("state_hash")
+  nonceHash             String    @unique(map: "oauth_transactions_nonce_hash_key") @map("nonce_hash")
+  pkceVerifierEncrypted String    @map("pkce_verifier_encrypted")
+  redirectUri           String    @map("redirect_uri")
+  expiresAt             DateTime  @map("expires_at") @db.Timestamptz(3)
+  consumedAt            DateTime? @map("consumed_at") @db.Timestamptz(3)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([expiresAt], map: "oauth_transactions_expires_at_idx")
+  @@map("oauth_transactions")
+}
+
+model Session {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId              String    @map("user_id") @db.Uuid
+  refreshTokenHash    String    @unique(map: "sessions_refresh_token_hash_key") @map("refresh_token_hash")
+  tokenFamilyId       String    @default(dbgenerated("gen_random_uuid()")) @map("token_family_id") @db.Uuid
+  expiresAt           DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt           DateTime? @map("revoked_at") @db.Timestamptz(3)
+  replacedBySessionId String?   @map("replaced_by_session_id") @db.Uuid
+  ipAddress           String?   @map("ip_address") @db.Inet
+  userAgent           String?   @map("user_agent")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastUsedAt          DateTime  @default(now()) @map("last_used_at") @db.Timestamptz(3)
+
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replacedBy Session?  @relation("SessionReplacement", fields: [replacedBySessionId], references: [id], onDelete: SetNull)
+  replaces   Session[] @relation("SessionReplacement")
+
+  @@index([userId, revokedAt], map: "sessions_user_id_revoked_at_idx")
+  @@index([expiresAt], map: "sessions_expires_at_idx")
+  @@index([tokenFamilyId], map: "sessions_token_family_id_idx")
+  @@map("sessions")
+}
+
+model MfaTotpMethod {
+  id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String        @unique(map: "mfa_totp_methods_user_id_key") @map("user_id") @db.Uuid
+  secretEncrypted  String        @map("secret_encrypted")
+  status           MfaTotpStatus @default(PENDING)
+  setupExpiresAt   DateTime?     @map("setup_expires_at") @db.Timestamptz(3)
+  enabledAt        DateTime?     @map("enabled_at") @db.Timestamptz(3)
+  lastUsedTimeStep BigInt?       @map("last_used_time_step")
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([setupExpiresAt], map: "mfa_totp_methods_setup_expires_at_idx")
+  @@map("mfa_totp_methods")
+}
+
+model MfaChallenge {
+  id            String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        String            @map("user_id") @db.Uuid
+  tokenHash     String            @unique(map: "mfa_challenges_token_hash_key") @map("token_hash")
+  primaryMethod PrimaryAuthMethod @map("primary_method")
+  attemptCount  Int               @default(0) @map("attempt_count")
+  maxAttempts   Int               @default(5) @map("max_attempts")
+  expiresAt     DateTime          @map("expires_at") @db.Timestamptz(3)
+  consumedAt    DateTime?         @map("consumed_at") @db.Timestamptz(3)
+  ipAddress     String?           @map("ip_address") @db.Inet
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt], map: "mfa_challenges_expires_at_idx")
+  @@index([userId, consumedAt], map: "mfa_challenges_user_id_consumed_at_idx")
+  @@map("mfa_challenges")
+}
+
+model MfaEnrollmentGrant {
+  id            String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        String            @map("user_id") @db.Uuid
+  tokenHash     String            @unique(map: "mfa_enrollment_grants_token_hash_key") @map("token_hash")
+  primaryMethod PrimaryAuthMethod @map("primary_method")
+  expiresAt     DateTime          @map("expires_at") @db.Timestamptz(3)
+  consumedAt    DateTime?         @map("consumed_at") @db.Timestamptz(3)
+  revokedAt     DateTime?         @map("revoked_at") @db.Timestamptz(3)
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt], map: "mfa_enrollment_grants_expires_at_idx")
+  @@index([userId, consumedAt, revokedAt], map: "mfa_enrollment_grants_user_state_idx")
+  @@map("mfa_enrollment_grants")
+}
+
+model MfaRecoveryCode {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt], map: "mfa_recovery_codes_user_id_used_at_idx")
+  @@map("mfa_recovery_codes")
+}
+
+model VerificationToken {
+  id        String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String                @map("user_id") @db.Uuid
+  type      VerificationTokenType
+  tokenHash String                @unique(map: "verification_tokens_token_hash_key") @map("token_hash")
+  expiresAt DateTime              @map("expires_at") @db.Timestamptz(3)
+  usedAt    DateTime?             @map("used_at") @db.Timestamptz(3)
+  createdAt DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt], map: "verification_tokens_expires_at_idx")
+  @@index([userId, type, usedAt], map: "verification_tokens_user_type_used_at_idx")
+  @@map("verification_tokens")
+}
+
+model SecurityEvent {
+  id        String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String?           @map("user_id") @db.Uuid
+  type      SecurityEventType
+  ipAddress String?           @map("ip_address") @db.Inet
+  userAgent String?           @map("user_agent")
+  metadata  Json              @default("{}") @db.JsonB
+  createdAt DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc), id(sort: Desc)], map: "security_events_user_created_at_id_idx")
+  @@map("security_events")
+}
+
+model AuditLog {
+  id         String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorId    String?     @map("actor_id") @db.Uuid
+  action     AuditAction
+  entityType String      @map("entity_type")
+  entityId   String      @map("entity_id") @db.Uuid
+  beforeData Json?       @map("before_data") @db.JsonB
+  afterData  Json?       @map("after_data") @db.JsonB
+  ipAddress  String?     @map("ip_address") @db.Inet
+  requestId  String?     @map("request_id")
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actor User? @relation("AuditLogActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt(sort: Desc), id(sort: Desc)], map: "audit_logs_created_at_id_idx")
+  @@index([actorId], map: "audit_logs_actor_id_idx")
+  @@index([entityType, entityId], map: "audit_logs_entity_type_entity_id_idx")
+  @@map("audit_logs")
+}
+
+model Address {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  recipientName String   @map("recipient_name")
+  phone         String
+  province      String
+  district      String
+  ward          String
+  street        String
+  postalCode    String?  @map("postal_code")
+  isDefault     Boolean  @default(false) @map("is_default")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The one-default-per-user rule is a partial unique index in migration.sql.
+  @@index([userId], map: "addresses_user_id_idx")
+  @@map("addresses")
+}
+
+model Category {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  slug        String   @unique(map: "categories_slug_key")
+  description String?
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  products Product[]
+
+  @@index([isActive, sortOrder, id], map: "categories_is_active_sort_order_id_idx")
+  @@index([createdAt(sort: Desc), id(sort: Desc)], map: "categories_created_at_id_idx")
+  @@map("categories")
+}
+
+model Product {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  categoryId     String        @map("category_id") @db.Uuid
+  name           String
+  slug           String        @unique(map: "products_slug_key")
+  sku            String        @unique(map: "products_sku_key")
+  description    String?
+  price          Decimal       @db.Decimal(14, 2)
+  compareAtPrice Decimal?      @map("compare_at_price") @db.Decimal(14, 2)
+  status         ProductStatus @default(DRAFT)
+  createdById    String        @map("created_by") @db.Uuid
+  deletedAt      DateTime?     @map("deleted_at") @db.Timestamptz(3)
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  category              Category               @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  createdBy             User                   @relation("ProductCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  images                ProductImage[]
+  inventory             Inventory?
+  inventoryTransactions InventoryTransaction[]
+  cartItems             CartItem[]
+  orderItems            OrderItem[]
+
+  @@index([categoryId, status, deletedAt], map: "products_category_status_deleted_at_idx")
+  @@index([status, deletedAt, createdAt(sort: Desc), id(sort: Desc)], map: "products_status_deleted_created_id_idx")
+  @@index([createdById], map: "products_created_by_idx")
+  @@map("products")
+}
+
+model ProductImage {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productId  String   @map("product_id") @db.Uuid
+  url        String
+  storageKey String   @unique(map: "product_images_storage_key_key") @map("storage_key")
+  altText    String?  @map("alt_text")
+  sortOrder  Int      @default(0) @map("sort_order")
+  isPrimary  Boolean  @default(false) @map("is_primary")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // The one-primary-image-per-product rule is a partial unique index in migration.sql.
+  @@index([productId, sortOrder], map: "product_images_product_id_sort_order_idx")
+  @@map("product_images")
+}
+
+model Inventory {
+  productId        String   @id @map("product_id") @db.Uuid
+  quantity         Int      @default(0)
+  reservedQuantity Int      @default(0) @map("reserved_quantity")
+  version          Int      @default(0)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@map("inventory")
+}
+
+model InventoryTransaction {
+  id            String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  productId     String                   @map("product_id") @db.Uuid
+  orderId       String?                  @map("order_id") @db.Uuid
+  type          InventoryTransactionType
+  quantityDelta Int                      @map("quantity_delta")
+  reservedDelta Int                      @map("reserved_delta")
+  quantityAfter Int                      @map("quantity_after")
+  reservedAfter Int                      @map("reserved_after")
+  reason        String
+  createdById   String?                  @map("created_by") @db.Uuid
+  createdAt     DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  order     Order?  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  createdBy User?   @relation("InventoryTransactionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([productId, createdAt(sort: Desc), id(sort: Desc)], map: "inventory_transactions_product_created_id_idx")
+  @@index([orderId], map: "inventory_transactions_order_id_idx")
+  @@index([createdById], map: "inventory_transactions_created_by_idx")
+  @@map("inventory_transactions")
+}
+
+model Cart {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @unique(map: "carts_user_id_key") @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cartId    String   @map("cart_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  quantity  Int
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([cartId, productId], map: "cart_items_cart_id_product_id_key")
+  @@index([productId], map: "cart_items_product_id_idx")
+  @@map("cart_items")
+}
+
+model Order {
+  id                     String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderNumber            String        @unique(map: "orders_order_number_key") @map("order_number")
+  userId                 String        @map("user_id") @db.Uuid
+  status                 OrderStatus   @default(PENDING)
+  paymentMethod          PaymentMethod @default(COD) @map("payment_method")
+  paymentStatus          PaymentStatus @default(UNPAID) @map("payment_status")
+  paidAt                 DateTime?     @map("paid_at") @db.Timestamptz(3)
+  subtotal               Decimal       @db.Decimal(14, 2)
+  shippingFee            Decimal       @map("shipping_fee") @db.Decimal(14, 2)
+  discountAmount         Decimal       @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  totalAmount            Decimal       @map("total_amount") @db.Decimal(14, 2)
+  currency               CurrencyCode  @default(VND)
+  shippingSnapshot       Json          @map("shipping_snapshot") @db.JsonB
+  customerNote           String?       @map("customer_note")
+  idempotencyKey         String        @map("idempotency_key")
+  idempotencyRequestHash String        @map("idempotency_request_hash")
+  createdAt              DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items                 OrderItem[]
+  statusHistory         OrderStatusHistory[]
+  inventoryTransactions InventoryTransaction[]
+
+  @@unique([userId, idempotencyKey], map: "orders_user_id_idempotency_key_key")
+  @@index([userId, createdAt(sort: Desc), id(sort: Desc)], map: "orders_user_created_at_id_idx")
+  @@index([status, createdAt(sort: Desc), id(sort: Desc)], map: "orders_status_created_at_id_idx")
+  @@map("orders")
+}
+
+model OrderItem {
+  id              String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId         String  @map("order_id") @db.Uuid
+  productId       String? @map("product_id") @db.Uuid
+  productName     String  @map("product_name")
+  productSku      String  @map("product_sku")
+  productImageUrl String? @map("product_image_url")
+  unitPrice       Decimal @map("unit_price") @db.Decimal(14, 2)
+  quantity        Int
+  lineTotal       Decimal @map("line_total") @db.Decimal(14, 2)
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([orderId], map: "order_items_order_id_idx")
+  @@index([productId], map: "order_items_product_id_idx")
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId     String       @map("order_id") @db.Uuid
+  fromStatus  OrderStatus? @map("from_status")
+  toStatus    OrderStatus  @map("to_status")
+  changedById String?      @map("changed_by") @db.Uuid
+  note        String?
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  order     Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  changedBy User? @relation("OrderStatusChangedBy", fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([orderId, createdAt(sort: Desc), id(sort: Desc)], map: "order_status_history_order_created_id_idx")
+  @@index([changedById], map: "order_status_history_changed_by_idx")
+  @@map("order_status_history")
+}

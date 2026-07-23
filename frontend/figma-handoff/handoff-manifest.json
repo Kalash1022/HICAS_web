@@ -1,0 +1,72 @@
+{
+  "generatedAt": "2026-07-21T03:00:26.886Z",
+  "frames": [
+    {
+      "index": 1,
+      "fileKey": "Lrys1FiUESHesjRHCjr5Xw",
+      "sourceUrl": "https://www.figma.com/design/Lrys1FiUESHesjRHCjr5Xw/Untitled?node-id=2-67&t=PUIpemhHVDEz8Wxe-4",
+      "nodeId": "2:67",
+      "name": "Cover",
+      "rawJson": "output/raw/figma-raw-lrys1fiueshesjrhcjr5xw.json",
+      "layoutJson": "output/layout/01-cover-2-67.json",
+      "png": "output/frames/01-cover-2-67.png",
+      "summary": "output/summaries/01-cover-2-67.md"
+    },
+    {
+      "index": 2,
+      "fileKey": "Lrys1FiUESHesjRHCjr5Xw",
+      "sourceUrl": "https://www.figma.com/design/Lrys1FiUESHesjRHCjr5Xw/Untitled?node-id=2-2582&t=PUIpemhHVDEz8Wxe-4",
+      "nodeId": "2:2582",
+      "name": "Login",
+      "rawJson": "output/raw/figma-raw-lrys1fiueshesjrhcjr5xw.json",
+      "layoutJson": "output/layout/02-login-2-2582.json",
+      "png": "output/frames/02-login-2-2582.png",
+      "summary": "output/summaries/02-login-2-2582.md"
+    },
+    {
+      "index": 3,
+      "fileKey": "Lrys1FiUESHesjRHCjr5Xw",
+      "sourceUrl": "https://www.figma.com/design/Lrys1FiUESHesjRHCjr5Xw/Untitled?node-id=2-2561&t=PUIpemhHVDEz8Wxe-4",
+      "nodeId": "2:2561",
+      "name": "Add New",
+      "rawJson": "output/raw/figma-raw-lrys1fiueshesjrhcjr5xw.json",
+      "layoutJson": "output/layout/03-add-new-2-2561.json",
+      "png": "output/frames/03-add-new-2-2561.png",
+      "summary": "output/summaries/03-add-new-2-2561.md"
+    },
+    {
+      "index": 4,
+      "fileKey": "Lrys1FiUESHesjRHCjr5Xw",
+      "sourceUrl": "https://www.figma.com/design/Lrys1FiUESHesjRHCjr5Xw/Untitled?node-id=2-2538&t=PUIpemhHVDEz8Wxe-4",
+      "nodeId": "2:2538",
+      "name": "Add New",
+      "rawJson": "output/raw/figma-raw-lrys1fiueshesjrhcjr5xw.json",
+      "layoutJson": "output/layout/04-add-new-2-2538.json",
+      "png": "output/frames/04-add-new-2-2538.png",
+      "summary": "output/summaries/04-add-new-2-2538.md"
+    },
+    {
+      "index": 5,
+      "fileKey": "Lrys1FiUESHesjRHCjr5Xw",
+      "sourceUrl": "https://www.figma.com/design/Lrys1FiUESHesjRHCjr5Xw/Untitled?node-id=2-2303&t=PUIpemhHVDEz8Wxe-4",
+      "nodeId": "2:2303",
+      "name": "Users",
+      "rawJson": "output/raw/figma-raw-lrys1fiueshesjrhcjr5xw.json",
+      "layoutJson": "output/layout/05-users-2-2303.json",
+      "png": "output/frames/05-users-2-2303.png",
+      "summary": "output/summaries/05-users-2-2303.md"
+    },
+    {
+      "index": 6,
+      "fileKey": "Lrys1FiUESHesjRHCjr5Xw",
+      "sourceUrl": "https://www.figma.com/design/Lrys1FiUESHesjRHCjr5Xw/Untitled?node-id=2-2068&t=PUIpemhHVDEz8Wxe-4",
+      "nodeId": "2:2068",
+      "name": "San pham",
+      "rawJson": "output/raw/figma-raw-lrys1fiueshesjrhcjr5xw.json",
+      "layoutJson": "output/layout/06-san-pham-2-2068.json",
+      "png": "output/frames/06-san-pham-2-2068.png",
+      "summary": "output/summaries/06-san-pham-2-2068.md"
+    }
+  ],
+  "failures": []
+}
