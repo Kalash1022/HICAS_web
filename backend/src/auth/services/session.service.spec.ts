@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { UserRole, UserStatus } from '@prisma/client';
+import { PrimaryAuthMethod, UserRole, UserStatus } from '@prisma/client';
 
 import { ApplicationException } from '../../common/exceptions/application.exception';
 import { AuthRepository } from '../auth.repository';
@@ -39,7 +39,7 @@ describe(SessionService.name, () => {
     });
 
     await expect(
-      service.beginPrimaryAuthentication('user-id', 'password-hash', {}),
+      service.beginPasswordAuthentication('user-id', 'password-hash', {}),
     ).resolves.toEqual({
       kind: 'mfa-enrollment',
       mfaEnrollmentRequired: true,
@@ -65,7 +65,7 @@ describe(SessionService.name, () => {
     });
 
     await expect(
-      service.beginPrimaryAuthentication('user-id', 'password-hash', {}),
+      service.beginPasswordAuthentication('user-id', 'password-hash', {}),
     ).resolves.toMatchObject({
       kind: 'session',
       accessToken: 'signed-access-token',
@@ -90,11 +90,31 @@ describe(SessionService.name, () => {
     });
 
     await expect(
-      service.beginPrimaryAuthentication('user-id', 'password-hash', {}),
+      service.beginPasswordAuthentication('user-id', 'password-hash', {}),
     ).rejects.toMatchObject({
       status: 403,
     });
     expect(accessTokens.sign.mock.calls).toHaveLength(0);
+  });
+
+  it('rechecks Google identity ownership with GOOGLE as the primary method', async () => {
+    repository.beginPrimaryAuthentication.mockResolvedValue({
+      kind: 'mfa-enrollment',
+      enrollmentToken: 'google-enrollment-token',
+      expiresIn: 600,
+    });
+
+    await service.beginGoogleAuthentication('user-id', 'google-subject', {
+      ipAddress: '127.0.0.1',
+    });
+
+    expect(repository.beginPrimaryAuthentication.mock.calls[0]?.[0]).toMatchObject({
+      userId: 'user-id',
+      proof: {
+        method: PrimaryAuthMethod.GOOGLE,
+        providerAccountId: 'google-subject',
+      },
+    });
   });
 
   it('surfaces reuse detection only after the repository revokes the family', async () => {

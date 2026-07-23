@@ -1,6 +1,6 @@
 import { type CanActivate, type ExecutionContext, HttpStatus, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { UserStatus, type UserRole } from '@prisma/client';
+import { MfaTotpStatus, UserRole, UserStatus } from '@prisma/client';
 
 import { AccessTokenService } from '../../auth/services/access-token.service';
 import { DatabaseService } from '../../database/database.service';
@@ -45,6 +45,9 @@ export class AccessTokenGuard implements CanActivate {
             role: true,
             status: true,
             emailVerifiedAt: true,
+            mfaTotpMethod: {
+              select: { status: true },
+            },
           },
         },
       },
@@ -76,6 +79,17 @@ export class AccessTokenGuard implements CanActivate {
       session.expiresAt.getTime() <= Date.now()
     ) {
       throw this.invalidSession();
+    }
+
+    if (
+      (session.user.role === UserRole.STAFF || session.user.role === UserRole.ADMIN) &&
+      session.user.mfaTotpMethod?.status !== MfaTotpStatus.ENABLED
+    ) {
+      throw new ApplicationException(
+        HttpStatus.FORBIDDEN,
+        'MFA_ENROLLMENT_REQUIRED',
+        'Multi-factor authentication enrollment is required',
+      );
     }
 
     const authenticatedUser: AuthenticatedUser = {

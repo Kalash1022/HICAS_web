@@ -28,7 +28,7 @@ describe(AuthService.name, () => {
       recordLoginFailure: jest.fn(),
     } as unknown as jest.Mocked<AuthRepository>;
     sessions = {
-      beginPrimaryAuthentication: jest.fn(),
+      beginPasswordAuthentication: jest.fn(),
       refresh: jest.fn(),
       logout: jest.fn(),
     } as unknown as jest.Mocked<SessionService>;
@@ -108,7 +108,7 @@ describe(AuthService.name, () => {
         { ipAddress: '127.0.0.1' },
       ),
     ).rejects.toBeInstanceOf(ApplicationException);
-    expect(sessions.beginPrimaryAuthentication.mock.calls).toHaveLength(0);
+    expect(sessions.beginPasswordAuthentication.mock.calls).toHaveLength(0);
   });
 
   it('rejects an ineligible reset token before hashing the replacement password', async () => {

@@ -41,6 +41,12 @@ export interface SessionAuthenticationResult {
   user: AuthenticatedUser;
 }
 
+export interface PublicSessionAuthenticationResult {
+  accessToken: string;
+  expiresIn: number;
+  user: AuthenticatedUser;
+}
+
 export interface MfaEnrollmentAuthenticationResult {
   kind: 'mfa-enrollment';
   mfaEnrollmentRequired: true;
@@ -61,10 +67,6 @@ export type AuthenticationResult =
   | MfaChallengeAuthenticationResult;
 
 export type PublicAuthenticationResult =
-  | {
-      accessToken: string;
-      expiresIn: number;
-      user: AuthenticatedUser;
-    }
+  | PublicSessionAuthenticationResult
   | Omit<MfaEnrollmentAuthenticationResult, 'kind'>
   | Omit<MfaChallengeAuthenticationResult, 'kind'>;

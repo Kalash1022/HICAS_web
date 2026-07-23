@@ -6,6 +6,7 @@ import type { CookieOptions, Request, Response } from 'express';
 import { ApplicationException } from '../common/exceptions/application.exception';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { AuthenticationResponseService } from './services/authentication-response.service';
 import { CookieOriginService } from './services/cookie-origin.service';
 
 describe(AuthController.name, () => {
@@ -27,11 +28,8 @@ describe(AuthController.name, () => {
     cookieOrigins = {
       assertTrusted: jest.fn(),
     } as unknown as jest.Mocked<CookieOriginService>;
-    controller = new AuthController(
-      auth,
-      cookieOrigins,
-      new ConfigService({ COOKIE_SECURE: false }),
-    );
+    const config = new ConfigService({ COOKIE_SECURE: false });
+    controller = new AuthController(auth, cookieOrigins, new AuthenticationResponseService(config));
   });
 
   it('validates login origin and prevents caching of enrollment credentials', async () => {

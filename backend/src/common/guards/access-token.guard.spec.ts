@@ -1,6 +1,6 @@
 import { type ExecutionContext, HttpStatus } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { UserRole, UserStatus } from '@prisma/client';
+import { MfaTotpStatus, UserRole, UserStatus } from '@prisma/client';
 
 import { AccessTokenService } from '../../auth/services/access-token.service';
 import type { DatabaseService } from '../../database/database.service';
@@ -21,6 +21,9 @@ interface SessionRecord {
     role: UserRole;
     status: UserStatus;
     emailVerifiedAt: Date | null;
+    mfaTotpMethod: {
+      status: MfaTotpStatus;
+    } | null;
   };
 }
 
@@ -102,7 +105,25 @@ describe('AccessTokenGuard', () => {
     expect(verify).toHaveBeenCalledWith('signed-token');
     expect(findUnique).toHaveBeenCalledWith({
       where: { id: 'session-1' },
-      select: expect.any(Object) as object,
+      select: {
+        id: true,
+        userId: true,
+        expiresAt: true,
+        revokedAt: true,
+        user: {
+          select: {
+            id: true,
+            email: true,
+            fullName: true,
+            role: true,
+            status: true,
+            emailVerifiedAt: true,
+            mfaTotpMethod: {
+              select: { status: true },
+            },
+          },
+        },
+      },
     });
     expect(request.user).toEqual({
       id: 'user-1',
@@ -134,6 +155,40 @@ describe('AccessTokenGuard', () => {
       status: HttpStatus.FORBIDDEN,
       response: { code: 'AUTH_EMAIL_NOT_VERIFIED' },
     });
+  });
+
+  it.each([UserRole.STAFF, UserRole.ADMIN])(
+    'rejects a %s session when TOTP enrollment is missing',
+    async (role) => {
+      findUnique.mockResolvedValue(createSession({}, { role, mfaTotpMethod: null }));
+      const { context } = createContext('Bearer signed-token');
+
+      await expect(guard.canActivate(context)).rejects.toMatchObject({
+        status: HttpStatus.FORBIDDEN,
+        response: { code: 'MFA_ENROLLMENT_REQUIRED' },
+      });
+    },
+  );
+
+  it('rejects a privileged session while TOTP enrollment is still pending', async () => {
+    findUnique.mockResolvedValue(
+      createSession({}, { mfaTotpMethod: { status: MfaTotpStatus.PENDING } }),
+    );
+    const { context } = createContext('Bearer signed-token');
+
+    await expect(guard.canActivate(context)).rejects.toMatchObject({
+      status: HttpStatus.FORBIDDEN,
+      response: { code: 'MFA_ENROLLMENT_REQUIRED' },
+    });
+  });
+
+  it('does not require MFA enrollment for a customer session', async () => {
+    findUnique.mockResolvedValue(
+      createSession({}, { role: UserRole.CUSTOMER, mfaTotpMethod: null }),
+    );
+    const { context } = createContext('Bearer signed-token');
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
   });
 
   it.each([
@@ -188,6 +243,7 @@ function createSession(
       role: UserRole.ADMIN,
       status: UserStatus.ACTIVE,
       emailVerifiedAt: new Date('2026-01-01T00:00:00.000Z'),
+      mfaTotpMethod: { status: MfaTotpStatus.ENABLED },
       ...userOverrides,
     },
   };

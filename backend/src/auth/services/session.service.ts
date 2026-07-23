@@ -1,9 +1,9 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { UserStatus } from '@prisma/client';
+import { PrimaryAuthMethod, UserStatus } from '@prisma/client';
 
 import { ApplicationException } from '../../common/exceptions/application.exception';
-import { AuthRepository } from '../auth.repository';
+import { AuthRepository, type PrimaryAuthenticationProof } from '../auth.repository';
 import type {
   AuthenticationResult,
   RequestContext,
@@ -26,14 +26,44 @@ export class SessionService {
     this.mfaChallengeTtlSeconds = config.getOrThrow<number>('MFA_CHALLENGE_TTL_SECONDS');
   }
 
-  async beginPrimaryAuthentication(
+  beginPasswordAuthentication(
     userId: string,
-    expectedPasswordHash: string,
+    passwordHash: string,
+    context: RequestContext,
+  ): Promise<AuthenticationResult> {
+    return this.beginPrimaryAuthentication(
+      userId,
+      {
+        method: PrimaryAuthMethod.PASSWORD,
+        passwordHash,
+      },
+      context,
+    );
+  }
+
+  beginGoogleAuthentication(
+    userId: string,
+    providerAccountId: string,
+    context: RequestContext,
+  ): Promise<AuthenticationResult> {
+    return this.beginPrimaryAuthentication(
+      userId,
+      {
+        method: PrimaryAuthMethod.GOOGLE,
+        providerAccountId,
+      },
+      context,
+    );
+  }
+
+  private async beginPrimaryAuthentication(
+    userId: string,
+    proof: PrimaryAuthenticationProof,
     context: RequestContext,
   ): Promise<AuthenticationResult> {
     const result = await this.repository.beginPrimaryAuthentication({
       userId,
-      expectedPasswordHash,
+      proof,
       context,
       refreshTtlDays: this.refreshTtlDays,
       mfaChallengeTtlSeconds: this.mfaChallengeTtlSeconds,
@@ -44,6 +74,13 @@ export class SessionService {
       this.throwForStatus(result.status);
     }
     if (result.kind === 'credentials-changed') {
+      if (proof.method === PrimaryAuthMethod.GOOGLE) {
+        throw new ApplicationException(
+          HttpStatus.UNAUTHORIZED,
+          'OAUTH_IDENTITY_INVALID',
+          'The Google identity is no longer available. Start sign-in again.',
+        );
+      }
       throw new ApplicationException(
         HttpStatus.UNAUTHORIZED,
         'AUTH_INVALID_CREDENTIALS',
@@ -67,7 +104,7 @@ export class SessionService {
       };
     }
 
-    return this.buildSessionResult(result);
+    return this.completeAuthentication(result);
   }
 
   async refresh(
@@ -100,7 +137,7 @@ export class SessionService {
       );
     }
 
-    return this.buildSessionResult(result);
+    return this.completeAuthentication(result);
   }
 
   async logout(refreshToken: string | undefined): Promise<void> {
@@ -111,7 +148,7 @@ export class SessionService {
     await this.repository.revokeRefreshToken(hashOpaqueToken(refreshToken), new Date());
   }
 
-  private async buildSessionResult(input: {
+  async completeAuthentication(input: {
     sessionId: string;
     refreshToken: string;
     refreshTokenExpiresAt: Date;

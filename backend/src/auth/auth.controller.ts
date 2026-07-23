@@ -8,48 +8,36 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { ApiCookieAuth, ApiHeader, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import type { CookieOptions, Request, Response } from 'express';
+import type { Request, Response } from 'express';
 
 import { Public } from '../common/decorators/public.decorator';
 import { ApplicationException } from '../common/exceptions/application.exception';
 import { REFRESH_TOKEN_COOKIE } from './auth.constants';
 import { AuthService } from './auth.service';
-import type {
-  AuthenticationResult,
-  PublicAuthenticationResult,
-  RequestContext,
-  SessionAuthenticationResult,
-} from './auth.types';
+import type { PublicAuthenticationResult } from './auth.types';
 import { EmailDto } from './dto/email.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { TokenDto } from './dto/token.dto';
+import { AuthenticationResponseService } from './services/authentication-response.service';
 import { CookieOriginService } from './services/cookie-origin.service';
+import { requestContextFromRequest } from './utilities/request-context';
 
 const CLEAR_REFRESH_COOKIE_STATUSES = new Set<number>([
   HttpStatus.UNAUTHORIZED,
   HttpStatus.FORBIDDEN,
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
-  private readonly cookieSecure: boolean;
-
   constructor(
     private readonly auth: AuthService,
     private readonly cookieOrigins: CookieOriginService,
-    config: ConfigService,
-  ) {
-    this.cookieSecure = config.getOrThrow<boolean>('COOKIE_SECURE');
-  }
+    private readonly authenticationResponses: AuthenticationResponseService,
+  ) {}
 
   @Post('register')
   @Public()
@@ -59,7 +47,7 @@ export class AuthController {
     @Body() dto: RegisterDto,
     @Req() request: Request,
   ): Promise<{ userId: string; status: 'PENDING'; verificationRequired: true }> {
-    return this.auth.register(dto, this.requestContext(request));
+    return this.auth.register(dto, requestContextFromRequest(request));
   }
 
   @Post('verify-email')
@@ -79,7 +67,7 @@ export class AuthController {
     description: 'Always generic to prevent account discovery',
   })
   resendVerification(@Body() dto: EmailDto, @Req() request: Request): Promise<{ accepted: true }> {
-    return this.auth.resendVerification(dto, this.requestContext(request));
+    return this.auth.resendVerification(dto, requestContextFromRequest(request));
   }
 
   @Post('forgot-password')
@@ -91,7 +79,7 @@ export class AuthController {
     description: 'Always generic to prevent account discovery',
   })
   forgotPassword(@Body() dto: EmailDto, @Req() request: Request): Promise<{ accepted: true }> {
-    return this.auth.forgotPassword(dto, this.requestContext(request));
+    return this.auth.forgotPassword(dto, requestContextFromRequest(request));
   }
 
   @Post('reset-password')
@@ -99,7 +87,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Consume a reset token and replace the password' })
   resetPassword(@Body() dto: ResetPasswordDto, @Req() request: Request): Promise<{ reset: true }> {
-    return this.auth.resetPassword(dto, this.requestContext(request));
+    return this.auth.resetPassword(dto, requestContextFromRequest(request));
   }
 
   @Post('login')
@@ -142,8 +130,9 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<PublicAuthenticationResult> {
     this.cookieOrigins.assertTrusted(request);
-    const result = await this.auth.login(dto, this.requestContext(request));
-    return this.finishAuthentication(result, response);
+    this.authenticationResponses.disableAuthenticationResponseCaching(response);
+    const result = await this.auth.login(dto, requestContextFromRequest(request));
+    return this.authenticationResponses.finishAuthentication(result, response);
   }
 
   @Post('refresh')
@@ -185,9 +174,10 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<PublicAuthenticationResult> {
     this.cookieOrigins.assertTrusted(request);
+    this.authenticationResponses.disableAuthenticationResponseCaching(response);
 
     try {
-      const refreshToken = this.getRefreshToken(request);
+      const refreshToken = this.authenticationResponses.readRefreshToken(request);
       if (!refreshToken) {
         throw new ApplicationException(
           HttpStatus.UNAUTHORIZED,
@@ -196,11 +186,11 @@ export class AuthController {
         );
       }
 
-      const result = await this.auth.refresh(refreshToken, this.requestContext(request));
-      return this.finishAuthentication(result, response);
+      const result = await this.auth.refresh(refreshToken, requestContextFromRequest(request));
+      return this.authenticationResponses.finishAuthentication(result, response);
     } catch (error) {
       if (error instanceof HttpException && CLEAR_REFRESH_COOKIE_STATUSES.has(error.getStatus())) {
-        response.clearCookie(REFRESH_TOKEN_COOKIE, this.baseCookieOptions());
+        this.authenticationResponses.clearRefreshCookie(response);
       }
       throw error;
     }
@@ -237,76 +227,8 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ): Promise<{ loggedOut: true }> {
     this.cookieOrigins.assertTrusted(request);
-    const result = await this.auth.logout(this.getRefreshToken(request));
-    response.clearCookie(REFRESH_TOKEN_COOKIE, this.baseCookieOptions());
+    const result = await this.auth.logout(this.authenticationResponses.readRefreshToken(request));
+    this.authenticationResponses.clearRefreshCookie(response);
     return result;
-  }
-
-  private finishAuthentication(
-    result: AuthenticationResult,
-    response: Response,
-  ): PublicAuthenticationResult {
-    this.disableAuthenticationResponseCaching(response);
-
-    if (result.kind === 'mfa-enrollment') {
-      return {
-        mfaEnrollmentRequired: true,
-        enrollmentToken: result.enrollmentToken,
-        expiresIn: result.expiresIn,
-      };
-    }
-    if (result.kind === 'mfa-challenge') {
-      return {
-        mfaRequired: true,
-        mfaToken: result.mfaToken,
-        expiresIn: result.expiresIn,
-      };
-    }
-
-    this.setRefreshCookie(response, result);
-    return {
-      accessToken: result.accessToken,
-      expiresIn: result.accessTokenExpiresIn,
-      user: result.user,
-    };
-  }
-
-  private setRefreshCookie(response: Response, result: SessionAuthenticationResult): void {
-    response.cookie(REFRESH_TOKEN_COOKIE, result.refreshToken, {
-      ...this.baseCookieOptions(),
-      expires: result.refreshTokenExpiresAt,
-    });
-  }
-
-  private disableAuthenticationResponseCaching(response: Response): void {
-    response.setHeader('Cache-Control', 'no-store');
-    response.setHeader('Pragma', 'no-cache');
-  }
-
-  private baseCookieOptions(): CookieOptions {
-    return {
-      httpOnly: true,
-      secure: this.cookieSecure,
-      sameSite: 'lax',
-      path: '/api/v1/auth',
-    };
-  }
-
-  private getRefreshToken(request: Request): string | undefined {
-    const cookies: unknown = request.cookies;
-    if (!isRecord(cookies)) {
-      return undefined;
-    }
-
-    const token = cookies[REFRESH_TOKEN_COOKIE];
-    return typeof token === 'string' && token.length > 0 ? token : undefined;
-  }
-
-  private requestContext(request: Request): RequestContext {
-    const userAgent = request.get('user-agent');
-    return {
-      ipAddress: request.ip || request.socket.remoteAddress,
-      ...(userAgent ? { userAgent: userAgent.slice(0, 512) } : {}),
-    };
   }
 }

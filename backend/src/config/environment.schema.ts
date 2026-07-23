@@ -49,6 +49,28 @@ function validateEnvironmentRelationships(
     }) as unknown as Record<string, unknown>;
   }
 
+  const frontendOrigins =
+    typeof value.FRONTEND_ORIGIN === 'string'
+      ? value.FRONTEND_ORIGIN.split(',').map((origin) => origin.trim())
+      : [];
+  let googleRedirectUrl: URL;
+  try {
+    if (typeof value.GOOGLE_REDIRECT_URI !== 'string') {
+      throw new TypeError('Missing Google redirect URI');
+    }
+    googleRedirectUrl = new URL(value.GOOGLE_REDIRECT_URI);
+  } catch {
+    return helpers.message({
+      custom: 'GOOGLE_REDIRECT_URI must be a valid HTTP(S) URL',
+    }) as unknown as Record<string, unknown>;
+  }
+
+  if (!frontendOrigins.includes(googleRedirectUrl.origin)) {
+    return helpers.message({
+      custom: 'GOOGLE_REDIRECT_URI origin must match one configured FRONTEND_ORIGIN',
+    }) as unknown as Record<string, unknown>;
+  }
+
   if (value.NODE_ENV !== 'production') {
     return value;
   }
@@ -59,20 +81,13 @@ function validateEnvironmentRelationships(
     }) as unknown as Record<string, unknown>;
   }
 
-  const frontendOrigins =
-    typeof value.FRONTEND_ORIGIN === 'string'
-      ? value.FRONTEND_ORIGIN.split(',').map((origin) => origin.trim())
-      : [];
   if (frontendOrigins.some((origin) => new URL(origin).protocol !== 'https:')) {
     return helpers.message({
       custom: 'FRONTEND_ORIGIN must contain only HTTPS origins in production',
     }) as unknown as Record<string, unknown>;
   }
 
-  if (
-    typeof value.GOOGLE_REDIRECT_URI !== 'string' ||
-    new URL(value.GOOGLE_REDIRECT_URI).protocol !== 'https:'
-  ) {
+  if (googleRedirectUrl.protocol !== 'https:') {
     return helpers.message({
       custom: 'GOOGLE_REDIRECT_URI must use HTTPS in production',
     }) as unknown as Record<string, unknown>;
@@ -117,6 +132,7 @@ export const environmentSchema = Joi.object({
   COOKIE_SECURE: Joi.boolean().default(false),
 
   MFA_CHALLENGE_TTL_SECONDS: Joi.number().integer().positive().default(300),
+  MFA_ISSUER: Joi.string().trim().min(1).max(64).default('HICAS Commerce'),
   MFA_ENCRYPTION_KEY: encryptionKey.invalid(Joi.ref('OAUTH_TRANSACTION_ENCRYPTION_KEY')),
 
   MAIL_PROVIDER: Joi.string().valid('smtp').default('smtp'),

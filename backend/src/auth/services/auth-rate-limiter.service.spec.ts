@@ -65,6 +65,49 @@ describe(AuthRateLimiterService.name, () => {
     expect(() => limiter.consumeRefreshFamily('family-id')).toThrow(ApplicationException);
   });
 
+  it.each([
+    [
+      'authorization URL',
+      20,
+      (service: AuthRateLimiterService) => service.consumeGoogleAuthorization('127.0.0.9'),
+    ],
+    [
+      'callback',
+      10,
+      (service: AuthRateLimiterService) => service.consumeGoogleCallback('127.0.0.9'),
+    ],
+  ])('limits Google %s by IP after %i requests', (_operation, limit, consume) => {
+    for (let attempt = 0; attempt < limit; attempt += 1) {
+      consume(limiter);
+    }
+
+    expect(() => consume(limiter)).toThrow(ApplicationException);
+  });
+
+  it('limits MFA setup to five requests per user each hour', () => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      limiter.consumeMfaSetup('staff-user-id');
+    }
+
+    expect(() => limiter.consumeMfaSetup('staff-user-id')).toThrow(ApplicationException);
+    expect(() => limiter.consumeMfaSetup('another-staff-user-id')).not.toThrow();
+
+    now += 60 * 60 * 1_000 + 1;
+    expect(() => limiter.consumeMfaSetup('staff-user-id')).not.toThrow();
+  });
+
+  it('limits MFA enable attempts by enrollment-token hash', () => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      limiter.consumeMfaEnable('enrollment-token-hash');
+    }
+
+    expect(() => limiter.consumeMfaEnable('enrollment-token-hash')).toThrow(ApplicationException);
+    expect(() => limiter.consumeMfaEnable('another-enrollment-token-hash')).not.toThrow();
+
+    now += 15 * 60 * 1_000 + 1;
+    expect(() => limiter.consumeMfaEnable('enrollment-token-hash')).not.toThrow();
+  });
+
   it('bounds attacker-controlled key cardinality', () => {
     for (let attempt = 0; attempt < 5_010; attempt += 1) {
       limiter.consumeLogin(`customer-${attempt}@example.com`, `192.0.2.${attempt}`);

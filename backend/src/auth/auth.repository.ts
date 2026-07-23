@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import {
+  AuthProvider,
   MfaTotpStatus,
+  PrimaryAuthMethod,
   Prisma,
   SecurityEventType,
   UserRole,
@@ -51,6 +53,16 @@ export interface PasswordResetEligibility {
 export interface CreatedPendingUser extends EligibleMailRecipient {
   id: string;
 }
+
+export type PrimaryAuthenticationProof =
+  | {
+      method: typeof PrimaryAuthMethod.PASSWORD;
+      passwordHash: string;
+    }
+  | {
+      method: typeof PrimaryAuthMethod.GOOGLE;
+      providerAccountId: string;
+    };
 
 export type PrimaryAuthenticationDatabaseResult =
   | {
@@ -428,7 +440,7 @@ export class AuthRepository {
 
   async beginPrimaryAuthentication(input: {
     userId: string;
-    expectedPasswordHash: string;
+    proof: PrimaryAuthenticationProof;
     context: RequestContext;
     refreshTtlDays: number;
     mfaChallengeTtlSeconds: number;
@@ -452,6 +464,10 @@ export class AuthRepository {
           passwordCredential: {
             select: { passwordHash: true },
           },
+          authIdentities: {
+            where: { provider: AuthProvider.GOOGLE },
+            select: { providerAccountId: true },
+          },
           mfaTotpMethod: {
             select: { status: true },
           },
@@ -470,7 +486,17 @@ export class AuthRepository {
           status: user.status === UserStatus.BLOCKED ? UserStatus.BLOCKED : UserStatus.PENDING,
         };
       }
-      if (user.passwordCredential?.passwordHash !== input.expectedPasswordHash) {
+      const proof = input.proof;
+      let credentialIsCurrent: boolean;
+      if (proof.method === PrimaryAuthMethod.PASSWORD) {
+        credentialIsCurrent = user.passwordCredential?.passwordHash === proof.passwordHash;
+      } else {
+        const providerAccountId = proof.providerAccountId;
+        credentialIsCurrent = user.authIdentities.some(
+          (identity) => identity.providerAccountId === providerAccountId,
+        );
+      }
+      if (!credentialIsCurrent) {
         return { kind: 'credentials-changed' };
       }
 
@@ -520,7 +546,7 @@ export class AuthRepository {
           data: {
             userId: user.id,
             tokenHash: hashOpaqueToken(enrollmentToken),
-            primaryMethod: 'PASSWORD',
+            primaryMethod: input.proof.method,
             expiresAt: addSeconds(input.now, MFA_ENROLLMENT_TTL_SECONDS),
           },
         });
@@ -536,14 +562,13 @@ export class AuthRepository {
         where: {
           userId: user.id,
           consumedAt: null,
-          expiresAt: { lte: input.now },
         },
       });
       await transaction.mfaChallenge.create({
         data: {
           userId: user.id,
           tokenHash: hashOpaqueToken(mfaToken),
-          primaryMethod: 'PASSWORD',
+          primaryMethod: input.proof.method,
           maxAttempts: 5,
           expiresAt: addSeconds(input.now, input.mfaChallengeTtlSeconds),
           ipAddress: input.context.ipAddress,

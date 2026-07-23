@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import * as argon2 from 'argon2';
 
@@ -14,6 +14,12 @@ export function createOpaqueToken(): string {
 
 export function hashOpaqueToken(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+export function constantTimeEqual(left: string, right: string): boolean {
+  const leftDigest = createHash('sha256').update(left, 'utf8').digest();
+  const rightDigest = createHash('sha256').update(right, 'utf8').digest();
+  return timingSafeEqual(leftDigest, rightDigest);
 }
 
 export async function hashPassword(password: string): Promise<string> {

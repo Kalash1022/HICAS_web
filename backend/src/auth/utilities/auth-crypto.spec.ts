@@ -1,4 +1,5 @@
 import {
+  constantTimeEqual,
   createOpaqueToken,
   hashOpaqueToken,
   hashPassword,
@@ -22,6 +23,12 @@ describe('auth crypto utilities', () => {
     expect(hashOpaqueToken(first)).toMatch(/^[a-f0-9]{64}$/);
     expect(hashOpaqueToken(first)).toBe(hashOpaqueToken(first));
     expect(hashOpaqueToken(first)).not.toContain(first);
+  });
+
+  it('compares opaque values without an early string comparison', () => {
+    expect(constantTimeEqual('same-value', 'same-value')).toBe(true);
+    expect(constantTimeEqual('same-value', 'different-value')).toBe(false);
+    expect(constantTimeEqual('short', 'a-much-longer-value')).toBe(false);
   });
 
   it('hashes passwords with Argon2id', async () => {

@@ -92,6 +92,46 @@ export class AuthRateLimiterService {
     ]);
   }
 
+  consumeGoogleAuthorization(ipAddress: string): void {
+    this.consume([
+      {
+        key: `google-authorization:ip:${ipAddress}`,
+        limit: 20,
+        windowMs: FIFTEEN_MINUTES_MS,
+      },
+    ]);
+  }
+
+  consumeGoogleCallback(ipAddress: string): void {
+    this.consume([
+      {
+        key: `google-callback:ip:${ipAddress}`,
+        limit: 10,
+        windowMs: FIFTEEN_MINUTES_MS,
+      },
+    ]);
+  }
+
+  consumeMfaSetup(userId: string): void {
+    this.consume([
+      {
+        key: `mfa-setup:user:${userId}`,
+        limit: 5,
+        windowMs: ONE_HOUR_MS,
+      },
+    ]);
+  }
+
+  consumeMfaEnable(tokenHash: string): void {
+    this.consume([
+      {
+        key: `mfa-enable:token:${tokenHash}`,
+        limit: 5,
+        windowMs: FIFTEEN_MINUTES_MS,
+      },
+    ]);
+  }
+
   consumeRefreshPreflight(ipAddress: string): void {
     this.consume([
       { key: `refresh:ip:${ipAddress}`, limit: 60, windowMs: FIFTEEN_MINUTES_MS },

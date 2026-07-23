@@ -56,6 +56,14 @@ async function bootstrap(): Promise<void> {
       },
       'access-token',
     )
+    .addBearerAuth(
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'Opaque MFA enrollment token',
+      },
+      'mfa-enrollment-token',
+    )
     .addCookieAuth(
       REFRESH_TOKEN_COOKIE,
       {

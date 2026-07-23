@@ -7,13 +7,17 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
+import { MfaTotpStatus, SecurityEventType, UserRole } from '@prisma/client';
 import cookieParser from 'cookie-parser';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
 import request from 'supertest';
 
-import { REFRESH_TOKEN_COOKIE } from '../src/auth/auth.constants';
+import { GOOGLE_OAUTH_STATE_COOKIE, REFRESH_TOKEN_COOKIE } from '../src/auth/auth.constants';
+import { GoogleOidcClient } from '../src/auth/google/google-oidc.client';
+import { TotpService } from '../src/auth/mfa/totp.service';
 import { AccessTokenService } from '../src/auth/services/access-token.service';
+import { AuthRateLimiterService } from '../src/auth/services/auth-rate-limiter.service';
 import { CurrentUser } from '../src/common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../src/common/types/authenticated-user';
 import { DatabaseService } from '../src/database/database.service';
@@ -111,6 +115,19 @@ function requiredString(record: Record<string, unknown>, key: string): string {
   return value;
 }
 
+function requiredStringArray(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    !value.every((item: unknown): item is string => typeof item === 'string' && item.length > 0)
+  ) {
+    throw new Error(`Expected ${key} to be a non-empty string array`);
+  }
+
+  return value;
+}
+
 function expectErrorCode(response: request.Response, expectedCode: string): void {
   const body = asRecord(response.body as unknown, 'error response body');
   const error = asRecord(body.error, 'error response');
@@ -156,9 +173,14 @@ describeDatabase('email/password authentication against PostgreSQL (e2e)', () =>
   jest.setTimeout(120_000);
 
   const email = `auth-e2e-${randomUUID()}@example.test`;
+  const googleEmail = `google-auth-e2e-${randomUUID()}@example.test`;
+  const googleSubject = `google-subject-${randomUUID()}`;
+  const staffEmail = `staff-auth-e2e-${randomUUID()}@example.test`;
   const fullName = 'Auth E2E Customer';
+  const staffFullName = 'Auth E2E Staff';
   const originalPassword = 'Correct-Horse-42';
   const replacementPassword = 'Battery-Staple-84';
+  const staffPassword = 'Staff-Correct-Horse-42';
   const verificationMessages: EmailVerificationMail[] = [];
   const passwordResetMessages: PasswordResetMail[] = [];
   const sendEmailVerification = jest.fn((message: EmailVerificationMail): Promise<void> => {
@@ -173,11 +195,46 @@ describeDatabase('email/password authentication against PostgreSQL (e2e)', () =>
     sendEmailVerification,
     sendPasswordReset,
   };
+  let currentGoogleEmail = googleEmail;
+  let currentGoogleSubject = googleSubject;
+  let latestGoogleNonce = '';
+  const googleOidcClient = {
+    createPkcePair: jest.fn().mockResolvedValue({
+      codeVerifier: 'auth-e2e-pkce-verifier',
+      codeChallenge: 'auth-e2e-pkce-challenge',
+    }),
+    createAuthorizationUrl: jest.fn(
+      (input: { state: string; nonce: string; codeChallenge: string }): string => {
+        latestGoogleNonce = input.nonce;
+        const authorizationUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+        authorizationUrl.searchParams.set('state', input.state);
+        authorizationUrl.searchParams.set('nonce', input.nonce);
+        authorizationUrl.searchParams.set('code_challenge', input.codeChallenge);
+        return authorizationUrl.toString();
+      },
+    ),
+    exchangeAuthorizationCode: jest.fn().mockResolvedValue('auth-e2e-id-token'),
+    verifyIdToken: jest.fn(() =>
+      Promise.resolve({
+        issuer: 'https://accounts.google.com',
+        audience: 'auth-e2e-google-client',
+        subject: currentGoogleSubject,
+        email: currentGoogleEmail,
+        emailVerified: true,
+        name: 'Google Auth E2E Customer',
+        nonce: latestGoogleNonce,
+        issuedAt: Math.floor(Date.now() / 1_000) - 60,
+        expiresAt: Math.floor(Date.now() / 1_000) + 3_600,
+      }),
+    ),
+  } as unknown as jest.Mocked<GoogleOidcClient>;
 
   let app: INestApplication | undefined;
   let database: DatabaseService | undefined;
   let httpServer: Server;
   let userId: string | undefined;
+  let googleUserId: string | undefined;
+  let staffUserId: string | undefined;
   let trustedOrigin: string;
 
   beforeAll(async () => {
@@ -190,6 +247,8 @@ describeDatabase('email/password authentication against PostgreSQL (e2e)', () =>
     })
       .overrideProvider(MAIL_SERVICE)
       .useValue(mailService)
+      .overrideProvider(GoogleOidcClient)
+      .useValue(googleOidcClient)
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -229,7 +288,7 @@ describeDatabase('email/password authentication against PostgreSQL (e2e)', () =>
   afterAll(async () => {
     try {
       if (database) {
-        const cleanupUserId =
+        const passwordUserId =
           userId ??
           (
             await database.user.findUnique({
@@ -237,19 +296,36 @@ describeDatabase('email/password authentication against PostgreSQL (e2e)', () =>
               select: { id: true },
             })
           )?.id;
-
-        if (!cleanupUserId) {
+        const googleAccountId =
+          googleUserId ??
+          (
+            await database.user.findUnique({
+              where: { emailNormalized: googleEmail.toLowerCase() },
+              select: { id: true },
+            })
+          )?.id;
+        const staffAccountId =
+          staffUserId ??
+          (
+            await database.user.findUnique({
+              where: { emailNormalized: staffEmail.toLowerCase() },
+              select: { id: true },
+            })
+          )?.id;
+        const cleanupUserIds = [passwordUserId, googleAccountId, staffAccountId].filter(
+          (candidate): candidate is string => typeof candidate === 'string',
+        );
+        if (cleanupUserIds.length === 0) {
           return;
         }
 
         await database.$transaction(async (transaction) => {
           await transaction.securityEvent.deleteMany({
-            where: { userId: cleanupUserId },
+            where: { userId: { in: cleanupUserIds } },
           });
           await transaction.user.deleteMany({
             where: {
-              id: cleanupUserId,
-              emailNormalized: email.toLowerCase(),
+              id: { in: cleanupUserIds },
             },
           });
         });
@@ -537,5 +613,344 @@ describeDatabase('email/password authentication against PostgreSQL (e2e)', () =>
       .set('Authorization', `Bearer ${replacementAccessToken}`)
       .expect(401);
     expectErrorCode(rejectedLoggedOutAccess, 'AUTH_SESSION_INVALID');
+  });
+
+  it('enrolls Staff TOTP and enforces authenticator and recovery-code replay protection', async () => {
+    if (!app || !database) {
+      throw new Error('Expected an initialized application and database');
+    }
+
+    // The preceding password scenario intentionally fills the per-IP login bucket.
+    // This scenario validates MFA rather than rate limiting, so give it an isolated bucket state.
+    const rateLimiter = app.get<{
+      attempts: Map<string, unknown>;
+    }>(AuthRateLimiterService);
+    rateLimiter.attempts.clear();
+
+    const verificationMessageOffset = verificationMessages.length;
+    const registerResponse = await request(httpServer)
+      .post('/api/v1/auth/register')
+      .send({
+        email: staffEmail,
+        password: staffPassword,
+        fullName: staffFullName,
+      })
+      .expect(201);
+    staffUserId = requiredString(responseData(registerResponse), 'userId');
+
+    const verificationMessage = verificationMessages[verificationMessageOffset];
+    if (!verificationMessage || verificationMessage.to !== staffEmail) {
+      throw new Error('Expected a verification message for the Staff test user');
+    }
+    await request(httpServer)
+      .post('/api/v1/auth/verify-email')
+      .send({ token: verificationMessage.token })
+      .expect(200);
+
+    await database.user.update({
+      where: { id: staffUserId },
+      data: { role: UserRole.STAFF },
+    });
+
+    const enrollmentLoginResponse = await request(httpServer)
+      .post('/api/v1/auth/login')
+      .set('Origin', trustedOrigin)
+      .send({ email: staffEmail, password: staffPassword })
+      .expect(200);
+    const enrollmentLoginData = responseData(enrollmentLoginResponse);
+    const enrollmentToken = requiredString(enrollmentLoginData, 'enrollmentToken');
+    expect(enrollmentLoginData).toMatchObject({
+      mfaEnrollmentRequired: true,
+      expiresIn: 600,
+    });
+    expect(enrollmentLoginData).not.toHaveProperty('accessToken');
+    expect(
+      setCookieHeaders(enrollmentLoginResponse).some((header) =>
+        header.startsWith(`${REFRESH_TOKEN_COOKIE}=`),
+      ),
+    ).toBe(false);
+
+    const missingOriginResponse = await request(httpServer)
+      .post('/api/v1/auth/mfa/setup')
+      .set('Authorization', `Bearer ${enrollmentToken}`)
+      .send({})
+      .expect(403);
+    expectErrorCode(missingOriginResponse, 'AUTH_ORIGIN_FORBIDDEN');
+
+    const setupResponse = await request(httpServer)
+      .post('/api/v1/auth/mfa/setup')
+      .set('Origin', trustedOrigin)
+      .set('Authorization', `Bearer ${enrollmentToken}`)
+      .send({})
+      .expect(200);
+    const setupData = responseData(setupResponse);
+    const manualKey = requiredString(setupData, 'manualKey');
+    const otpauthUri = requiredString(setupData, 'otpauthUri');
+    const qrCodeDataUrl = requiredString(setupData, 'qrCodeDataUrl');
+    expect(manualKey).toMatch(/^[A-Z2-7]{32}$/);
+    expect(otpauthUri).toMatch(/^otpauth:\/\/totp\//);
+    expect(new URL(otpauthUri).searchParams.get('secret')).toBe(manualKey);
+    expect(qrCodeDataUrl).toMatch(/^data:image\/png;base64,/);
+    expect(setupData.expiresIn).toEqual(expect.any(Number));
+    expect(setupResponse.headers['cache-control']).toBe('no-store');
+
+    const totp = app.get(TotpService);
+    const enrollmentCode = totp.generateCode(manualKey);
+    const enableResponse = await request(httpServer)
+      .post('/api/v1/auth/mfa/enable')
+      .set('Origin', trustedOrigin)
+      .set('Authorization', `Bearer ${enrollmentToken}`)
+      .send({ code: enrollmentCode })
+      .expect(200);
+    const enableData = responseData(enableResponse);
+    const recoveryCodes = requiredStringArray(enableData, 'recoveryCodes');
+    expect(recoveryCodes).toHaveLength(10);
+    expect(new Set(recoveryCodes).size).toBe(10);
+    expect(
+      recoveryCodes.every((code) => /^[2-9A-HJ-NP-Z]{4}(?:-[2-9A-HJ-NP-Z]{4}){4}$/.test(code)),
+    ).toBe(true);
+    expect(requiredString(enableData, 'accessToken')).toBeTruthy();
+    expect(refreshCookie(enableResponse)).toContain(`${REFRESH_TOKEN_COOKIE}=`);
+    expect(asRecord(enableData.user, 'MFA enrollment user')).toMatchObject({
+      id: staffUserId,
+      email: staffEmail,
+      role: UserRole.STAFF,
+    });
+
+    const enabledMethod = await database.mfaTotpMethod.findUnique({
+      where: { userId: staffUserId },
+      select: {
+        status: true,
+        setupExpiresAt: true,
+        enabledAt: true,
+        lastUsedTimeStep: true,
+      },
+    });
+    expect(enabledMethod).toMatchObject({
+      status: MfaTotpStatus.ENABLED,
+      setupExpiresAt: null,
+    });
+    expect(enabledMethod?.enabledAt).toBeInstanceOf(Date);
+    expect(typeof enabledMethod?.lastUsedTimeStep).toBe('bigint');
+    expect(
+      await database.mfaRecoveryCode.count({
+        where: { userId: staffUserId },
+      }),
+    ).toBe(10);
+
+    if (enabledMethod?.lastUsedTimeStep === null || enabledMethod?.lastUsedTimeStep === undefined) {
+      throw new Error('Expected the enrollment TOTP time step to be recorded');
+    }
+    const nextTimeStep = enabledMethod.lastUsedTimeStep + 1n;
+    const nextTimeStepDate = new Date(Number(nextTimeStep) * 30_000 + 1_000);
+    const nextTimeStepCode = totp.generateCode(manualKey, nextTimeStepDate);
+
+    const startMfaChallenge = async (): Promise<string> => {
+      const loginResponse = await request(httpServer)
+        .post('/api/v1/auth/login')
+        .set('Origin', trustedOrigin)
+        .send({ email: staffEmail, password: staffPassword })
+        .expect(200);
+      const loginData = responseData(loginResponse);
+      expect(loginData).toMatchObject({
+        mfaRequired: true,
+        expiresIn: 300,
+      });
+      expect(loginData).not.toHaveProperty('accessToken');
+      expect(
+        setCookieHeaders(loginResponse).some((header) =>
+          header.startsWith(`${REFRESH_TOKEN_COOKIE}=`),
+        ),
+      ).toBe(false);
+      return requiredString(loginData, 'mfaToken');
+    };
+
+    const totpChallengeToken = await startMfaChallenge();
+    const totpVerifyResponse = await request(httpServer)
+      .post('/api/v1/auth/mfa/verify')
+      .set('Origin', trustedOrigin)
+      .send({
+        mfaToken: totpChallengeToken,
+        code: nextTimeStepCode,
+      })
+      .expect(200);
+    expect(requiredString(responseData(totpVerifyResponse), 'accessToken')).toBeTruthy();
+    expect(refreshCookie(totpVerifyResponse)).toContain(`${REFRESH_TOKEN_COOKIE}=`);
+    expect(
+      await database.mfaTotpMethod.findUnique({
+        where: { userId: staffUserId },
+        select: { lastUsedTimeStep: true },
+      }),
+    ).toEqual({ lastUsedTimeStep: nextTimeStep });
+
+    const replayChallengeToken = await startMfaChallenge();
+    const replayedTimeStepResponse = await request(httpServer)
+      .post('/api/v1/auth/mfa/verify')
+      .set('Origin', trustedOrigin)
+      .send({
+        mfaToken: replayChallengeToken,
+        code: nextTimeStepCode,
+      })
+      .expect(401);
+    expectErrorCode(replayedTimeStepResponse, 'MFA_CODE_INVALID');
+
+    const recoveryCode = recoveryCodes[0];
+    if (!recoveryCode) {
+      throw new Error('Expected at least one recovery code');
+    }
+    const recoveryVerifyResponse = await request(httpServer)
+      .post('/api/v1/auth/mfa/verify')
+      .set('Origin', trustedOrigin)
+      .send({
+        mfaToken: replayChallengeToken,
+        recoveryCode,
+      })
+      .expect(200);
+    expect(requiredString(responseData(recoveryVerifyResponse), 'accessToken')).toBeTruthy();
+    expect(refreshCookie(recoveryVerifyResponse)).toContain(`${REFRESH_TOKEN_COOKIE}=`);
+    expect(
+      await database.mfaRecoveryCode.count({
+        where: { userId: staffUserId, usedAt: { not: null } },
+      }),
+    ).toBe(1);
+
+    const recoveryReplayChallengeToken = await startMfaChallenge();
+    const replayedRecoveryResponse = await request(httpServer)
+      .post('/api/v1/auth/mfa/verify')
+      .set('Origin', trustedOrigin)
+      .send({
+        mfaToken: recoveryReplayChallengeToken,
+        recoveryCode,
+      })
+      .expect(401);
+    expectErrorCode(replayedRecoveryResponse, 'MFA_CODE_INVALID');
+    expect(
+      await database.mfaRecoveryCode.count({
+        where: { userId: staffUserId, usedAt: { not: null } },
+      }),
+    ).toBe(1);
+
+    const recoveryEvents = await database.securityEvent.findMany({
+      where: {
+        userId: staffUserId,
+        type: SecurityEventType.MFA_RECOVERY_CODE_USED,
+      },
+      select: { metadata: true },
+    });
+    expect(recoveryEvents).toHaveLength(1);
+    const recoveryEventMetadata = JSON.stringify(recoveryEvents[0]?.metadata);
+    expect(recoveryEventMetadata).not.toContain(recoveryCode);
+    expect(recoveryEventMetadata).not.toContain(recoveryCode.replaceAll('-', ''));
+  });
+
+  it('creates a Google-only user, binds state to the browser, and rejects replay', async () => {
+    currentGoogleEmail = googleEmail;
+    currentGoogleSubject = googleSubject;
+    const missingOriginResponse = await request(httpServer)
+      .get('/api/v1/auth/google/url')
+      .expect(403);
+    expectErrorCode(missingOriginResponse, 'AUTH_ORIGIN_FORBIDDEN');
+
+    const browser = request.agent(httpServer);
+    const authorizationResponse = await browser
+      .get('/api/v1/auth/google/url')
+      .set('Origin', trustedOrigin)
+      .expect(200);
+    const authorizationData = responseData(authorizationResponse);
+    const authorizationUrl = new URL(requiredString(authorizationData, 'authorizationUrl'));
+    const state = authorizationUrl.searchParams.get('state');
+    if (!state) {
+      throw new Error('Expected the Google authorization URL to contain state');
+    }
+    expect(authorizationResponse.headers['cache-control']).toBe('no-store');
+    expect(setCookieHeaders(authorizationResponse).join('; ')).toContain(
+      `${GOOGLE_OAUTH_STATE_COOKIE}=`,
+    );
+
+    const exchangeCallsBefore = googleOidcClient.exchangeAuthorizationCode.mock.calls.length;
+    const callbackResponse = await browser
+      .post('/api/v1/auth/google/callback')
+      .set('Origin', trustedOrigin)
+      .send({ code: 'auth-e2e-google-code', state })
+      .expect(200);
+    const callbackData = responseData(callbackResponse);
+    googleUserId = requiredString(asRecord(callbackData.user, 'Google authenticated user'), 'id');
+    expect(requiredString(callbackData, 'accessToken')).toBeTruthy();
+    expect(refreshCookie(callbackResponse)).toContain(`${REFRESH_TOKEN_COOKIE}=`);
+    expect(googleOidcClient.exchangeAuthorizationCode.mock.calls).toHaveLength(
+      exchangeCallsBefore + 1,
+    );
+
+    const googleUser = await database?.user.findUnique({
+      where: { id: googleUserId },
+      select: {
+        status: true,
+        emailVerifiedAt: true,
+        passwordCredential: { select: { id: true } },
+        authIdentities: {
+          select: {
+            provider: true,
+            providerAccountId: true,
+          },
+        },
+      },
+    });
+    expect(googleUser).toMatchObject({
+      status: 'ACTIVE',
+      passwordCredential: null,
+      authIdentities: [
+        {
+          provider: 'GOOGLE',
+          providerAccountId: googleSubject,
+        },
+      ],
+    });
+    expect(googleUser?.emailVerifiedAt).toBeInstanceOf(Date);
+
+    const replayResponse = await request(httpServer)
+      .post('/api/v1/auth/google/callback')
+      .set('Origin', trustedOrigin)
+      .set('Cookie', `${GOOGLE_OAUTH_STATE_COOKIE}=${state}`)
+      .send({ code: 'auth-e2e-google-code', state })
+      .expect(409);
+    expectErrorCode(replayResponse, 'OAUTH_TRANSACTION_ALREADY_USED');
+    expect(googleOidcClient.exchangeAuthorizationCode.mock.calls).toHaveLength(
+      exchangeCallsBefore + 1,
+    );
+  });
+
+  it('does not auto-link a different Google subject to an existing password email', async () => {
+    currentGoogleEmail = email;
+    currentGoogleSubject = `different-google-subject-${randomUUID()}`;
+    const browser = request.agent(httpServer);
+    const authorizationResponse = await browser
+      .get('/api/v1/auth/google/url')
+      .set('Origin', trustedOrigin)
+      .expect(200);
+    const authorizationUrl = new URL(
+      requiredString(responseData(authorizationResponse), 'authorizationUrl'),
+    );
+    const state = authorizationUrl.searchParams.get('state');
+    if (!state) {
+      throw new Error('Expected the Google authorization URL to contain state');
+    }
+
+    const callbackResponse = await browser
+      .post('/api/v1/auth/google/callback')
+      .set('Origin', trustedOrigin)
+      .send({ code: 'auth-e2e-account-link-code', state })
+      .expect(409);
+    expectErrorCode(callbackResponse, 'OAUTH_ACCOUNT_LINK_REQUIRED');
+
+    const unexpectedIdentity = await database?.authIdentity.findUnique({
+      where: {
+        provider_providerAccountId: {
+          provider: 'GOOGLE',
+          providerAccountId: currentGoogleSubject,
+        },
+      },
+      select: { id: true },
+    });
+    expect(unexpectedIdentity).toBeNull();
   });
 });

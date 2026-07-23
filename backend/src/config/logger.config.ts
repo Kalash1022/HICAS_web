@@ -4,6 +4,21 @@ import { stdTimeFunctions } from 'pino';
 
 import { getOrCreateRequestId } from '../common/middleware/request-id';
 
+const MFA_ENROLLMENT_SECRET_FIELDS = [
+  'recoveryCodes',
+  'manualKey',
+  'otpauthUri',
+  'qrCodeDataUrl',
+  'secretEncrypted',
+  'recoveryCodeHashes',
+] as const;
+const MFA_ENROLLMENT_SECRET_PATHS = MFA_ENROLLMENT_SECRET_FIELDS.flatMap((field) => [
+  field,
+  `*.${field}`,
+  `*.*.${field}`,
+  `*.*.*.${field}`,
+]);
+
 const REDACTED_LOG_PATHS = [
   'req.headers',
   'res.headers',
@@ -40,6 +55,7 @@ const REDACTED_LOG_PATHS = [
   '*.totpSecret',
   '*.mfaSecret',
   '*.recoveryCode',
+  ...MFA_ENROLLMENT_SECRET_PATHS,
 ];
 
 interface SerializedRequest {

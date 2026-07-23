@@ -52,6 +52,9 @@ Mục tiêu kiến trúc:
 | ADR-027 | Guard đọc User + Session mỗi protected request; bảo vệ Admin cuối cùng | Role/status và session revoke có hiệu lực ngay trong hệ thống một instance |
 | ADR-028 | Shipping fee MVP là flat fee cấu hình backend | Không để frontend quyết định phí và chưa cần tích hợp hãng vận chuyển |
 | ADR-029 | Supabase chỉ là PostgreSQL hạ tầng; Data API không truy cập bảng backend | Mọi authorization đi qua NestJS; migration revoke Data API roles và bật RLS không policy |
+| ADR-030 | Google state được bind với browser bằng HttpOnly cookie | DB state chống replay nhưng cookie binding mới ngăn login-CSRF từ authorization response được chuyển sang browser khác |
+| ADR-031 | Pending TOTP setup sống tối đa 10 phút và không vượt quá enrollment grant; setup trả `otpauthUri`, PNG data URL 256px và manual key | Đóng contract QR/TTL mà không thêm state hoặc cấu hình dư thừa |
+| ADR-032 | Mỗi enrollment sinh 10 recovery code 100-bit; primary login mới hủy challenge MFA cũ chưa dùng | Recovery code đủ entropy để hash SHA-256 an toàn và mỗi user chỉ có một login challenge hiện hành |
 
 ### 2.1 Hướng mở rộng sau MVP
 
@@ -601,6 +604,14 @@ GET /api/v1/auth/google/url
 
 Backend tạo state và nonce độc lập, mỗi giá trị random tối thiểu 32 bytes, PKCE S256 và OAuth transaction TTL 10 phút. Database lưu hash của state/nonce; PKCE verifier được mã hóa bằng application encryption service với `OAUTH_TRANSACTION_ENCRYPTION_KEY`.
 
+Response trả `{ authorizationUrl, expiresIn: 600 }` và đặt cookie
+`hicas_google_oauth_state` chứa state gốc, `HttpOnly`, `SameSite=Lax`, path
+`/api/v1/auth/google/callback`, TTL 10 phút và `Secure=true` ở production.
+Frontend bắt buộc gọi endpoint bằng `credentials: "include"`; có thể giữ thêm
+state trong `sessionStorage` để kiểm tra trước callback nhưng không thay thế
+HttpOnly cookie phía backend. Endpoint này cũng kiểm tra `Origin`/`Referer` exact
+match trước khi tạo transaction để tránh cross-site prefetch/overwrite cookie.
+
 ```text
 response_type=code
 scope=openid email profile
@@ -628,19 +639,24 @@ POST /api/v1/auth/google/callback
 
 Backend:
 
-1. Hash và tìm state.
-2. Kiểm tra TTL và `consumed_at`.
-3. Consume transaction atomically.
-4. Đổi code với PKCE verifier.
-5. Verify Google ID token bằng `google-auth-library`.
-6. Kiểm tra signature, `aud`, `iss`, `exp`, `sub`, `email_verified=true` và email policy.
-7. Hash claim `nonce` từ ID token và constant-time compare với `oauth_transactions.nonce_hash`; thiếu/sai nonce trả `OAUTH_NONCE_INVALID`.
-8. Tìm identity bằng `(GOOGLE, sub)`.
-9. Tạo user/identity `ACTIVE` mới với `email_verified_at=now()` nếu email chưa tồn tại.
-10. Nếu email trùng user chưa linked, trả `OAUTH_ACCOUNT_LINK_REQUIRED`.
-11. Yêu cầu user `ACTIVE`; `PENDING/BLOCKED` trả error tương ứng, nếu hợp lệ mới áp dụng policy MFA/session theo role.
+1. Kiểm tra `Origin`/`Referer`, constant-time compare body state với browser state
+   cookie và xóa cookie sau callback.
+2. Hash và tìm state.
+3. Kiểm tra TTL và `consumed_at`.
+4. Consume transaction atomically.
+5. Giải mã PKCE verifier và đổi code.
+6. Verify Google ID token bằng `google-auth-library`.
+7. Kiểm tra signature, `aud`, `iss`, `exp`, `sub`, `email_verified=true` và email policy.
+8. Hash claim `nonce` từ ID token và constant-time compare với `oauth_transactions.nonce_hash`; thiếu/sai nonce trả `OAUTH_NONCE_INVALID`.
+9. Tìm identity bằng `(GOOGLE, sub)`.
+10. Tạo user/identity `ACTIVE` mới với `email_verified_at=now()` nếu email chưa tồn tại.
+11. Nếu email trùng user chưa linked, trả `OAUTH_ACCOUNT_LINK_REQUIRED`.
+12. Yêu cầu user `ACTIVE`; `PENDING/BLOCKED` trả error tương ứng, nếu hợp lệ mới áp dụng policy MFA/session theo role.
 
-`redirect_uri` không nhận từ frontend; backend dùng giá trị cấu hình cố định.
+`redirect_uri` không nhận từ frontend; backend dùng giá trị cấu hình cố định và
+config validation yêu cầu origin của URI này nằm trong `FRONTEND_ORIGIN`. PKCE
+verifier dùng envelope AES-256-GCM versioned, IV ngẫu nhiên 12 byte, auth tag 16
+byte và AAD bind ciphertext với hash state của đúng transaction.
 
 Callback là one-time, không replay response: bước 3 atomically claim transaction bằng `consumed_at`; request lặp/cạnh tranh trả `OAUTH_TRANSACTION_ALREADY_USED` và không exchange code hay tạo session lần hai. Nếu exchange/Google verification lỗi sau khi claim, frontend phải bắt đầu authorization flow mới. Unique identity/user constraints vẫn bảo đảm không tạo account trùng; Lean MVP không lưu callback response snapshot.
 
@@ -1334,9 +1350,24 @@ Các error code bắt buộc của các quyết định nghiệp vụ mới:
 |---:|---|---|
 | 403 | `AUTH_EMAIL_NOT_VERIFIED` | User PENDING có primary credential hợp lệ nhưng chưa verify email |
 | 403 | `AUTH_ACCOUNT_BLOCKED` | User BLOCKED login, refresh hoặc gọi protected API |
+| 400 | `OAUTH_STATE_COOKIE_MISMATCH` | State callback không thuộc browser đã bắt đầu flow |
+| 400 | `OAUTH_TRANSACTION_INVALID` | State không tồn tại hoặc đã hết hạn |
+| 401 | `OAUTH_CODE_EXCHANGE_FAILED` | Google code không hợp lệ hoặc đã hết hạn |
+| 401 | `OAUTH_ID_TOKEN_INVALID` | ID token/claim Google không hợp lệ |
+| 401 | `OAUTH_IDENTITY_INVALID` | Google identity không còn thuộc user khi tạo session |
 | 401 | `OAUTH_NONCE_INVALID` | Google ID token thiếu nonce hoặc nonce không khớp transaction |
+| 403 | `OAUTH_EMAIL_NOT_VERIFIED` | Google chưa xác minh email trong ID token |
 | 409 | `OAUTH_TRANSACTION_ALREADY_USED` | Google callback retry/race dùng OAuth transaction đã được claim |
+| 409 | `OAUTH_ACCOUNT_LINK_REQUIRED` | Email đã thuộc account khác và MVP không auto-link |
+| 503 | `OAUTH_PROVIDER_UNAVAILABLE` | Google tạm thời không khả dụng |
+| 400 | `MFA_SETUP_REQUIRED` | Enrollment chưa có pending setup hợp lệ hoặc setup đã hết hạn |
+| 401 | `MFA_ENROLLMENT_TOKEN_INVALID` | Enrollment token thiếu, không hợp lệ, hết hạn, đã consume hoặc revoke |
+| 401 | `MFA_CHALLENGE_INVALID` | MFA challenge không tồn tại, hết hạn hoặc đã consume |
+| 401 | `MFA_CODE_INVALID` | TOTP sai/replay hoặc recovery code không hợp lệ/đã dùng |
+| 403 | `MFA_NOT_AVAILABLE` | Customer hoặc role không thuộc policy MFA cố gọi MFA enrollment |
 | 403 | `MFA_ENROLLMENT_REQUIRED` | Account Staff/Admin đã qua primary auth nhưng chưa hoàn tất MFA và cố truy cập ngoài scope enrollment |
+| 409 | `MFA_ALREADY_ENABLED` | Enrollment token cũ cố setup lại method đã bật |
+| 429 | `MFA_CHALLENGE_EXHAUSTED` | Challenge đã đạt tối đa 5 lần thử |
 | 403 | `MFA_RESET_SELF_FORBIDDEN` | Admin cố dùng recovery endpoint để tự reset MFA |
 | 409 | `IDEMPOTENCY_KEY_CONFLICT` | Cùng idempotency key nhưng request hash khác |
 | 409 | `LAST_ACTIVE_ADMIN_REQUIRED` | Block/demote Admin ACTIVE cuối cùng hoặc loại bỏ credential quản trị cuối cùng |

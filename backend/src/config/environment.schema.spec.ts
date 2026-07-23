@@ -26,6 +26,7 @@ describe('environmentSchema', () => {
 
     expect(result.error).toBeUndefined();
     expect(value.DEFAULT_SHIPPING_FEE_VND).toBe(30_000);
+    expect(value.MFA_ISSUER).toBe('HICAS Commerce');
     expect(value.RATE_LIMIT_STORE).toBe('memory');
     expect(value.TRUST_PROXY_HOPS).toBe(0);
   });
@@ -86,6 +87,40 @@ describe('environmentSchema', () => {
     const result = environmentSchema.validate(withoutDirectUrl, { abortEarly: false });
 
     expect(result.error?.message).toContain('DIRECT_URL');
+  });
+
+  it('requires the Google callback to return to a configured frontend origin', () => {
+    const result = environmentSchema.validate(
+      {
+        ...validEnvironment,
+        GOOGLE_REDIRECT_URI: 'http://untrusted.example.com/auth/google/callback',
+      },
+      { abortEarly: false },
+    );
+
+    expect(result.error?.message).toContain('GOOGLE_REDIRECT_URI');
+    expect(result.error?.message).toContain('FRONTEND_ORIGIN');
+  });
+
+  it('reports a malformed Google callback URI without throwing', () => {
+    expect(() =>
+      environmentSchema.validate(
+        {
+          ...validEnvironment,
+          GOOGLE_REDIRECT_URI: 'not-a-url',
+        },
+        { abortEarly: false },
+      ),
+    ).not.toThrow();
+
+    const result = environmentSchema.validate(
+      {
+        ...validEnvironment,
+        GOOGLE_REDIRECT_URI: 'not-a-url',
+      },
+      { abortEarly: false },
+    );
+    expect(result.error?.message).toContain('GOOGLE_REDIRECT_URI');
   });
 
   it.each([

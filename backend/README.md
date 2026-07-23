@@ -14,6 +14,12 @@ NestJS modular monolith cho Lean MVP, được triển khai theo
 - Email/password hoàn chỉnh: đăng ký `PENDING`, verify/resend email, login,
   forgot/reset password, Argon2id, rotating refresh token, reuse detection, logout
   và DB-backed User/Session guard.
+- Google OIDC hoàn chỉnh: state gắn với browser, PKCE S256, nonce, verifier mã
+  hóa AES-256-GCM, callback one-time, xác minh ID token, tạo Google-only Customer
+  và từ chối auto-link chỉ dựa trên email.
+- TOTP MFA cho Staff/Admin: enrollment token giới hạn, QR/manual key, secret mã
+  hóa AES-256-GCM, challenge tối đa 5 lần thử, chống replay atomic và 10 recovery
+  codes dùng một lần.
 - SMTP Mail provider với template xác minh email và đặt lại mật khẩu.
 - Các module commerce còn lại được tách theo domain và sẽ tiếp tục triển khai theo
   thứ tự Release 1.
@@ -48,11 +54,15 @@ Khi dùng Docker Compose local, đặt `S3_ACCESS_KEY=minioadmin` và
 `S3_SECRET_KEY=minioadmin` để khớp MinIO. Mailpit không yêu cầu
 `SMTP_USER`/`SMTP_PASSWORD`.
 
-Config validation hiện kiểm tra cấu hình của toàn Lean MVP. Vì vậy các biến
-Google, MFA và S3 vẫn phải có giá trị khi khởi động, dù endpoint Google/MFA đang
-ở bước triển khai kế tiếp. Có thể dùng placeholder được ghi rõ là local-only khi
-chỉ kiểm thử Email/Password; tuyệt đối không triển khai production bằng
-placeholder.
+Config validation hiện kiểm tra cấu hình của toàn Lean MVP. MFA yêu cầu
+`MFA_ENCRYPTION_KEY` riêng và dùng `MFA_ISSUER` làm nhãn trong ứng dụng
+Authenticator. Cấu hình S3 vẫn phải có giá trị khi khởi động dù endpoint upload
+đang ở bước triển khai kế tiếp. Google Login production bắt buộc dùng OAuth client
+thật; tuyệt đối không triển khai placeholder local.
+
+`GOOGLE_REDIRECT_URI` phải trỏ đến route callback của frontend và có origin nằm
+trong `FRONTEND_ORIGIN`. Trong Google Cloud Console, thêm chính xác URI này vào
+danh sách **Authorized redirect URIs**.
 
 ## Kết nối Supabase PostgreSQL
 
@@ -239,6 +249,111 @@ await fetch(`${apiBaseUrl}/auth/refresh`, {
 Nếu gọi bằng công cụ không tự thêm `Origin`, phải gửi header khớp với
 `FRONTEND_ORIGIN`.
 
+## Google OIDC API
+
+| Endpoint | HTTP | Mục đích |
+|---|---:|---|
+| `/api/v1/auth/google/url` | `GET` | Tạo authorization URL, state, PKCE và nonce |
+| `/api/v1/auth/google/callback` | `POST` | Consume state và đổi `code` lấy Google identity |
+
+Luồng frontend:
+
+1. Gọi `GET /auth/google/url` với `credentials: "include"`.
+2. Redirect browser đến `data.authorizationUrl`.
+3. Route `${GOOGLE_REDIRECT_URI}` nhận `code` và `state` từ Google.
+4. POST `{ "code", "state" }` tới `/auth/google/callback` với
+   `credentials: "include"`.
+
+Endpoint URL đặt cookie `hicas_google_oauth_state` dạng `HttpOnly`,
+`SameSite=Lax`, sống 10 phút và chỉ gửi tới callback backend. Cả hai endpoint
+Google đều yêu cầu `Origin`/`Referer` hợp lệ. Callback so khớp cookie với body
+bằng constant-time comparison, sau đó xóa cookie dù thành công hay thất bại.
+Frontend nên kiểm tra thêm `state` đã lưu trong `sessionStorage` trước khi gọi
+backend.
+
+Với chính sách cookie `SameSite=Lax`, frontend và API production phải được triển
+khai cùng site. Nếu bắt buộc chạy cross-site, cần thiết kế lại cookie
+`SameSite=None; Secure` cùng biện pháp chống CSRF trước khi phát hành.
+
+Backend lưu hash của state/nonce, mã hóa PKCE verifier bằng AES-256-GCM và claim
+OAuth transaction atomically trước khi gọi Google. Callback retry hoặc hai
+request cạnh tranh không thể exchange code lần thứ hai. Backend chỉ dùng Google
+claim `sub` làm provider ID, không lưu Google access/refresh token và không
+auto-link tài khoản chỉ vì email trùng.
+
+Google Customer hợp lệ nhận session như password login. Staff/Admin sẽ nhận
+enrollment token hoặc MFA challenge theo policy MFA hiện tại, không nhận session
+trước khi hoàn tất MFA.
+
+Các error code Google ổn định:
+
+| HTTP | Code |
+|---:|---|
+| `400` | `OAUTH_STATE_COOKIE_MISMATCH` |
+| `400` | `OAUTH_TRANSACTION_INVALID` |
+| `401` | `OAUTH_CODE_EXCHANGE_FAILED` |
+| `401` | `OAUTH_ID_TOKEN_INVALID` |
+| `401` | `OAUTH_IDENTITY_INVALID` |
+| `401` | `OAUTH_NONCE_INVALID` |
+| `403` | `OAUTH_EMAIL_NOT_VERIFIED` |
+| `403` | `AUTH_EMAIL_NOT_VERIFIED` |
+| `403` | `AUTH_ACCOUNT_BLOCKED` |
+| `409` | `OAUTH_TRANSACTION_ALREADY_USED` |
+| `409` | `OAUTH_ACCOUNT_LINK_REQUIRED` |
+| `503` | `OAUTH_PROVIDER_UNAVAILABLE` |
+
+## TOTP MFA API
+
+MFA chỉ dành cho Staff/Admin và bắt buộc trước khi cấp application session.
+Customer không có endpoint setup/disable MFA trong Lean MVP.
+
+| Endpoint | Credential | Mục đích |
+|---|---|---|
+| `POST /api/v1/auth/mfa/setup` | `Bearer <enrollmentToken>` | Tạo pending secret, URI và QR |
+| `POST /api/v1/auth/mfa/enable` | `Bearer <enrollmentToken>` | Xác minh OTP đầu tiên, bật MFA và tạo session |
+| `POST /api/v1/auth/mfa/verify` | `mfaToken` trong body | Hoàn tất login bằng OTP hoặc recovery code |
+
+Luồng enrollment:
+
+1. Staff/Admin login bằng password hoặc Google. Nếu chưa bật MFA, response trả
+   `mfaEnrollmentRequired`, `enrollmentToken` và TTL 600 giây; chưa có session.
+2. Gọi `POST /auth/mfa/setup` với body `{}`. Response trả `otpauthUri`,
+   `qrCodeDataUrl`, `manualKey` và `expiresIn`.
+3. Scan QR bằng Google Authenticator và gọi `POST /auth/mfa/enable` với
+   `{ "code": "123456" }`.
+4. Enable thành công mới đặt refresh cookie, trả access token và đúng 10
+   `recoveryCodes`. Lưu recovery codes offline vì backend không trả lại lần hai.
+
+Sau khi MFA đã bật, primary login trả `mfaRequired`, `mfaToken` và TTL. Hoàn tất
+bằng đúng một trong hai request:
+
+```json
+{ "mfaToken": "...", "code": "123456" }
+```
+
+```json
+{ "mfaToken": "...", "recoveryCode": "ABCD-EFGH-JKLM-NPQR-STUV" }
+```
+
+Tất cả endpoint MFA yêu cầu `Origin`/`Referer` hợp lệ, response `no-store` và
+frontend phải dùng `credentials: "include"` để nhận refresh cookie sau
+enable/verify. TOTP dùng SHA-1, 6 chữ số, chu kỳ 30 giây, cửa sổ `±1`; cùng time
+step chỉ thành công một lần. Challenge hết hạn sau cấu hình mặc định 5 phút và
+khóa sau 5 lần sai.
+
+Các error code MFA ổn định:
+
+| HTTP | Code |
+|---:|---|
+| `400` | `MFA_SETUP_REQUIRED` |
+| `401` | `MFA_ENROLLMENT_TOKEN_INVALID` |
+| `401` | `MFA_CHALLENGE_INVALID` |
+| `401` | `MFA_CODE_INVALID` |
+| `403` | `MFA_NOT_AVAILABLE` |
+| `403` | `MFA_ENROLLMENT_REQUIRED` |
+| `409` | `MFA_ALREADY_ENABLED` |
+| `429` | `MFA_CHALLENGE_EXHAUSTED` |
+
 ### Kiểm tra email bằng Mailpit
 
 Sau khi chạy Compose, mở `http://localhost:8025`, đăng ký hoặc gọi forgot-password
@@ -251,7 +366,7 @@ Frontend cần cung cấp đúng hai route này để consume token qua API. SMT
 sau khi database commit; nếu gửi lỗi, backend ghi log đã redacted và người dùng
 có thể yêu cầu gửi lại sau rate-limit window.
 
-## Rate limit Email/Password
+## Rate limit Authentication
 
 - Register: 3 lần/giờ/email, 20 lần/giờ/IP và 1.000 lần/giờ/process.
 - Login: 5 lần/15 phút theo normalized account và theo IP.
@@ -260,6 +375,11 @@ có thể yêu cầu gửi lại sau rate-limit window.
 - Reset password: 5 lần/15 phút/token và account, 20 lần/15 phút/IP và 1.000
   lần/15 phút/process; token được kiểm tra rẻ trước khi chạy Argon2 và được kiểm
   tra lại atomically khi consume.
+- Google authorization URL: 20 lần/15 phút/IP.
+- Google callback: 10 lần/15 phút/IP.
+- MFA setup: 5 lần/giờ/user.
+- MFA enable: 5 lần/15 phút/enrollment token.
+- MFA verify: tối đa 5 lần thử/challenge, được lưu trong database.
 - Refresh: 30 lần/15 phút/token family, 60 lần/15 phút/IP và 5.000 lần/15
   phút/process.
 
@@ -290,6 +410,6 @@ trước và đặt `RUN_DATABASE_E2E=1`.
 
 ## Bước triển khai kế tiếp
 
-Email/Password của Release 1 đã hoàn thành. Bước tiếp theo là Google OIDC:
-authorization URL, state, PKCE, nonce, one-time callback và ID-token verification.
-Sau Google Login mới triển khai TOTP MFA bắt buộc cho Staff/Admin.
+Email/Password, Google OIDC và core TOTP MFA của Release 1 đã hoàn thành. Bước
+tiếp theo là administration slice: quản lý role/status, bảo vệ Admin cuối cùng và
+Admin reset MFA cho Staff/Admin khác với audit đầy đủ.

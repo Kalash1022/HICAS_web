@@ -203,7 +203,7 @@ export class AuthService {
       );
     }
 
-    return this.sessions.beginPrimaryAuthentication(user.id, user.passwordHash, context);
+    return this.sessions.beginPasswordAuthentication(user.id, user.passwordHash, context);
   }
 
   async refresh(
