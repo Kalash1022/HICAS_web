@@ -1534,6 +1534,9 @@ SMTP_PASSWORD=
 
 RATE_LIMIT_STORE=memory
 DEFAULT_SHIPPING_FEE_VND=30000
+CLEANUP_INTERVAL_SECONDS=3600
+CLEANUP_BATCH_SIZE=100
+ORPHAN_IMAGE_GRACE_PERIOD_SECONDS=3600
 
 STORAGE_PROVIDER=s3
 S3_ENDPOINT=
@@ -1574,7 +1577,7 @@ VITE_API_BASE_URL=http://localhost:3000/api/v1
 - Register email/password tạo PENDING và không có session; verify chuyển ACTIVE atomically.
 - Resend verification và forgot-password trả generic response, có rate limit và chống account enumeration; hai resend đồng thời chỉ để một token hợp lệ, SMTP failure không làm lộ account.
 - Verify/reset token hết hạn và single-use; reset-password yêu cầu opaque token hợp
-  lệ, áp dụng counter theo token, account sau preflight hợp lệ, IP và toàn process,
+  lệ, áp dụng counter theo token, account sau preflight  hợp lệ, IP và toàn process,
   đồng thời revoke toàn bộ session.
 - PENDING bị từ chối login/refresh; BLOCKED bị từ chối password/Google login, refresh và protected API.
 - Refresh rotation và reuse detection.

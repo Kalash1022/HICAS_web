@@ -9,6 +9,7 @@ import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { CartsModule } from './carts/carts.module';
 import { CategoriesModule } from './categories/categories.module';
+import { CleanupModule } from './cleanup/cleanup.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { AccessTokenGuard } from './common/guards/access-token.guard';
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
@@ -46,6 +47,7 @@ import { UsersModule } from './users/users.module';
     NotificationsModule,
     AuditModule,
     AdministrationModule,
+    CleanupModule,
   ],
   providers: [
     {

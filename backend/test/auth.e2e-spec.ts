@@ -7,7 +7,14 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
-import { MfaTotpStatus, SecurityEventType, UserRole } from '@prisma/client';
+import {
+  AuditAction,
+  MfaTotpStatus,
+  PrimaryAuthMethod,
+  SecurityEventType,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import cookieParser from 'cookie-parser';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
@@ -841,6 +848,141 @@ describeDatabase('email/password authentication against PostgreSQL (e2e)', () =>
     const recoveryEventMetadata = JSON.stringify(recoveryEvents[0]?.metadata);
     expect(recoveryEventMetadata).not.toContain(recoveryCode);
     expect(recoveryEventMetadata).not.toContain(recoveryCode.replaceAll('-', ''));
+  });
+
+  it('lets an Administrator manage user status, role, and another account MFA atomically', async () => {
+    if (!app || !database || !staffUserId || !userId) {
+      throw new Error('Expected initialized Staff/Admin and Customer test users');
+    }
+
+    await database.user.update({
+      where: { id: staffUserId },
+      data: { role: UserRole.ADMIN },
+    });
+    const adminSession = await database.session.findFirst({
+      where: { userId: staffUserId, revokedAt: null },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    if (!adminSession) {
+      throw new Error('Expected a live Staff session to exercise administration endpoints');
+    }
+    const adminAccessToken = await app.get(AccessTokenService).sign({
+      userId: staffUserId,
+      sessionId: adminSession.id,
+      role: UserRole.ADMIN,
+    });
+
+    const listResponse = await request(httpServer)
+      .get('/api/v1/admin/users?page=1&limit=5&search=auth-e2e')
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .expect(200);
+    const listBody = asRecord(listResponse.body as unknown, 'list response');
+    expect(Array.isArray(listBody.data)).toBe(true);
+    expect(listBody.pagination).toMatchObject({
+      page: 1,
+      limit: 5,
+    });
+
+    const blockResponse = await request(httpServer)
+      .patch(`/api/v1/admin/users/${userId}/status`)
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .send({ status: UserStatus.BLOCKED })
+      .expect(200);
+    expect(responseData(blockResponse)).toMatchObject({ id: userId, status: UserStatus.BLOCKED });
+    expect(await database.session.count({ where: { userId, revokedAt: null } })).toBe(0);
+    expect(
+      await database.auditLog.count({
+        where: { actorId: staffUserId, entityId: userId, action: AuditAction.USER_BLOCKED },
+      }),
+    ).toBe(1);
+
+    const unblockResponse = await request(httpServer)
+      .patch(`/api/v1/admin/users/${userId}/status`)
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .send({ status: UserStatus.ACTIVE })
+      .expect(200);
+    expect(responseData(unblockResponse)).toMatchObject({ id: userId, status: UserStatus.ACTIVE });
+
+    const roleResponse = await request(httpServer)
+      .patch(`/api/v1/admin/users/${userId}/role`)
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .send({ role: UserRole.STAFF })
+      .expect(200);
+    expect(responseData(roleResponse)).toMatchObject({ id: userId, role: UserRole.STAFF });
+
+    await database.mfaTotpMethod.create({
+      data: {
+        userId,
+        secretEncrypted: 'test-only-encrypted-secret',
+        status: MfaTotpStatus.ENABLED,
+        enabledAt: new Date(),
+      },
+    });
+    await database.mfaRecoveryCode.create({ data: { userId, codeHash: `test-${randomUUID()}` } });
+    await database.mfaEnrollmentGrant.create({
+      data: {
+        userId,
+        tokenHash: `test-${randomUUID()}`,
+        primaryMethod: PrimaryAuthMethod.PASSWORD,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    await database.mfaChallenge.create({
+      data: {
+        userId,
+        tokenHash: `test-${randomUUID()}`,
+        primaryMethod: PrimaryAuthMethod.PASSWORD,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    await database.session.create({
+      data: {
+        userId,
+        refreshTokenHash: `test-${randomUUID()}`,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const resetResponse = await request(httpServer)
+      .post(`/api/v1/admin/users/${userId}/mfa/reset`)
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .send({})
+      .expect(200);
+    expect(responseData(resetResponse)).toMatchObject({ id: userId, mfaStatus: 'NONE' });
+    expect(await database.mfaTotpMethod.findUnique({ where: { userId } })).toBeNull();
+    expect(await database.mfaRecoveryCode.count({ where: { userId } })).toBe(0);
+    expect(await database.mfaChallenge.count({ where: { userId, consumedAt: null } })).toBe(0);
+    expect(
+      await database.mfaEnrollmentGrant.count({
+        where: { userId, consumedAt: null, revokedAt: null },
+      }),
+    ).toBe(0);
+    expect(await database.session.count({ where: { userId, revokedAt: null } })).toBe(0);
+    expect(
+      await database.securityEvent.count({
+        where: { userId, type: SecurityEventType.MFA_RESET_BY_ADMIN },
+      }),
+    ).toBe(1);
+    expect(
+      await database.auditLog.count({
+        where: { actorId: staffUserId, entityId: userId, action: AuditAction.USER_MFA_RESET },
+      }),
+    ).toBe(1);
+
+    const selfResetResponse = await request(httpServer)
+      .post(`/api/v1/admin/users/${staffUserId}/mfa/reset`)
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .send({})
+      .expect(403);
+    expectErrorCode(selfResetResponse, 'MFA_RESET_SELF_FORBIDDEN');
+
+    const demoteLastAdmin = await request(httpServer)
+      .patch(`/api/v1/admin/users/${staffUserId}/role`)
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .send({ role: UserRole.STAFF })
+      .expect(409);
+    expectErrorCode(demoteLastAdmin, 'LAST_ACTIVE_ADMIN_REQUIRED');
   });
 
   it('creates a Google-only user, binds state to the browser, and rejects replay', async () => {

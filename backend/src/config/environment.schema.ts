@@ -144,11 +144,18 @@ export const environmentSchema = Joi.object({
 
   RATE_LIMIT_STORE: Joi.string().valid('memory').default('memory'),
   DEFAULT_SHIPPING_FEE_VND: Joi.number().integer().min(0).default(30_000),
+  CLEANUP_INTERVAL_SECONDS: Joi.number().integer().min(60).max(86_400).default(3_600),
+  CLEANUP_BATCH_SIZE: Joi.number().integer().min(1).max(500).default(100),
+  ORPHAN_IMAGE_GRACE_PERIOD_SECONDS: Joi.number().integer().min(60).max(604_800).default(3_600),
 
   STORAGE_PROVIDER: Joi.string().valid('s3').default('s3'),
   S3_ENDPOINT: Joi.string()
     .uri({ scheme: ['http', 'https'] })
     .required(),
+  S3_REGION: Joi.string().trim().min(1).default('us-east-1'),
+  S3_PUBLIC_BASE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .optional(),
   S3_BUCKET: Joi.string().trim().min(1).required(),
   S3_ACCESS_KEY: Joi.string().min(1).required(),
   S3_SECRET_KEY: Joi.string().min(1).required(),

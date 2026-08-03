@@ -29,6 +29,9 @@ describe('environmentSchema', () => {
     expect(value.MFA_ISSUER).toBe('HICAS Commerce');
     expect(value.RATE_LIMIT_STORE).toBe('memory');
     expect(value.TRUST_PROXY_HOPS).toBe(0);
+    expect(value.CLEANUP_INTERVAL_SECONDS).toBe(3_600);
+    expect(value.CLEANUP_BATCH_SIZE).toBe(100);
+    expect(value.ORPHAN_IMAGE_GRACE_PERIOD_SECONDS).toBe(3_600);
   });
 
   it('accepts a bounded reverse-proxy hop count and converts it to a number', () => {

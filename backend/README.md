@@ -125,6 +125,14 @@ npm.cmd run start:dev
 MinIO trong Compose chỉ dành cho phát triển local. Production phải cấu hình
 object storage S3-compatible được quản lý riêng.
 
+### Product image storage
+
+`POST /api/v1/admin/products/:id/images` chỉ nhận JPEG, PNG hoặc WebP tối đa 5 MB,
+chuyển ảnh sang WebP và lưu theo key `products/{productId}/{uuid}.webp`. Cấu hình
+`S3_PUBLIC_BASE_URL` phải trỏ tới CDN hoặc endpoint có quyền đọc công khai cho bucket;
+nếu không frontend sẽ không thể hiển thị URL ảnh đã lưu. Bucket mới được tạo tự động cho
+MinIO local, nhưng production nên được tạo và cấu hình policy/CDN bởi hạ tầng trước khi deploy.
+
 ### Triển khai sau reverse proxy
 
 `TRUST_PROXY_HOPS` quyết định Express có tin địa chỉ client trong header
