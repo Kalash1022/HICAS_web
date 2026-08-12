@@ -1,5 +1,0 @@
-node_modules
-dist
-coverage
-prisma/migrations
-package-lock.json
