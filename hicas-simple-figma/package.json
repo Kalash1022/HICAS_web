@@ -1,0 +1,32 @@
+{
+  "name": "hicas-simple-figma",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ứng dụng quản lý sản phẩm tối giản theo giao diện Figma HICAS.",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"node --watch server.js\" \"vite\"",
+    "dev:client": "vite",
+    "dev:server": "node --watch server.js",
+    "build": "vite build",
+    "format": "prettier --write \"src/**/*.{js,jsx}\" \"server.js\" \"vite.config.js\"",
+    "format:check": "prettier --check \"src/**/*.{js,jsx}\" \"server.js\" \"vite.config.js\"",
+    "start": "node server.js",
+    "check": "node --check server.js",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "prettier": "3.5.3",
+    "vite": "^6.0.7"
+  }
+}
