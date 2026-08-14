@@ -1,0 +1,14 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Dependencies and generated files
+node_modules/
+dist/
+build/
+coverage/
+
+# Local tooling
+npm-debug.log*
+.DS_Store
